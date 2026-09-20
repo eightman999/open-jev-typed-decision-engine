@@ -124,6 +124,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", default="jevlite.pt")
     p.add_argument("--schema", default="agent", choices=list(SCHEMAS))
+    p.add_argument("--backend", default="torch", choices=["torch", "coreml"])
+    p.add_argument("--compute-units", default="cpu_and_ne",
+                   choices=["cpu_only", "cpu_and_ne", "cpu_and_gpu", "all"],
+                   help="coreml backend only; cpu_and_ne keeps the GPU off")
+    p.add_argument("--pkg-dir", default="artifacts/coreml")
     a = p.parse_args()
 
     # 05_serve.py starts with a digit so it cannot be imported by name
@@ -132,7 +137,8 @@ def main():
     S = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(S)
     print("loading the model...", flush=True)
-    e = S.load(a.ckpt)
+    e = S.load(a.ckpt, backend=a.backend, compute_units=a.compute_units,
+               pkg_dir=a.pkg_dir)
     name = a.schema
     print(f"ready on {e['dev']}   schema: {name}   "
           f"temperatures {[round(t, 3) for t in e['temps']]}")

@@ -120,6 +120,13 @@ class CoreMLEngine:
         self.tok = AutoTokenizer.from_pretrained(self.encoder_name)
         _, self.qid, self.lid = add_markers(self.tok)
         self.pad_id = self.tok.pad_token_id
+        # Predict outputs are ObjC-bridged objects; releasing them lets Core ML
+        # destroy a graph containing PyObject* on a background dispatch thread,
+        # which corrupts the heap (EXC_BAD_ACCESS in objc_destructInstance ->
+        # _PyObject_Free, later faults in unrelated native calls). Retaining the
+        # outputs for the engine's lifetime sidesteps the dealloc entirely -
+        # each is only a few KB.
+        self._keepalive = []
 
         self.max_seq = max(self._models)
         # Never feed the encoder a longer buffer than the largest package.
@@ -154,7 +161,8 @@ class CoreMLEngine:
         att[0, :L] = 1
         out = self._models[S].predict(
             {"input_ids": ids, "attention_mask": att})
-        return np.asarray(out["token_logits"])[0]
+        self._keepalive.append(out)
+        return np.array(out["token_logits"], dtype=np.float32)[0]
 
     def label_logits(self, enc):
         """token_logits gathered at the encoded <<l>> positions. -> [M]"""
