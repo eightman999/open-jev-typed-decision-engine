@@ -57,6 +57,7 @@ def make_inputs(model, ckpt, seq_len):
 
 
 def main():
+    global WARMUP
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", default="jevlite.pt")
     p.add_argument("--pkg-dir", default="artifacts/coreml")
@@ -71,7 +72,6 @@ def main():
                             "coreml_cpu_and_ne", "coreml_all"])
     p.add_argument("--out", default="artifacts/benchmark.json")
     a = p.parse_args()
-    global WARMUP
     WARMUP = a.warmup
 
     ck = require_ckpt(a.ckpt)

@@ -1,42 +1,42 @@
 {
- "ckpt": "artifacts/jevlite-smoke.pt",
+ "ckpt": "jevlite.pt",
  "split": "test",
- "n_rows": 10,
+ "n_rows": 50,
  "skipped": 0,
  "max_bucket": 1024,
  "compute_units": {
   "cpu_only": {
-   "max_abs_logit_err": 0.04081249237060547,
-   "mean_abs_logit_err": 0.009276379831135273,
-   "decision_agreement": 0.94,
-   "confidence_mae": 0.0019775488386154184,
-   "n_decisions": 50,
-   "coreml_accuracy": 0.36,
-   "torch_accuracy": 0.34,
-   "accuracy_regression_pp": -2.0,
-   "wall_s": 2.425239086151123
+   "max_abs_logit_err": 0.17734646797180176,
+   "mean_abs_logit_err": 0.028164507821202278,
+   "decision_agreement": 0.98,
+   "confidence_mae": 0.005599699971389768,
+   "n_decisions": 250,
+   "coreml_accuracy": 0.724,
+   "torch_accuracy": 0.724,
+   "accuracy_regression_pp": 0.0,
+   "wall_s": 6.205364942550659
   },
   "cpu_and_ne": {
-   "max_abs_logit_err": 0.009386777877807617,
-   "mean_abs_logit_err": 0.002864118432626128,
-   "decision_agreement": 1.0,
-   "confidence_mae": 0.0005111295137405403,
-   "n_decisions": 50,
-   "coreml_accuracy": 0.34,
-   "torch_accuracy": 0.34,
+   "max_abs_logit_err": 0.03958814591169357,
+   "mean_abs_logit_err": 0.008728251792490482,
+   "decision_agreement": 0.996,
+   "confidence_mae": 0.0017602722484588603,
+   "n_decisions": 250,
+   "coreml_accuracy": 0.724,
+   "torch_accuracy": 0.724,
    "accuracy_regression_pp": 0.0,
-   "wall_s": 0.8945159912109375
+   "wall_s": 3.714613199234009
   },
   "all": {
-   "max_abs_logit_err": 0.0050199031829833984,
-   "mean_abs_logit_err": 0.0018601774936541915,
+   "max_abs_logit_err": 0.05262947082519531,
+   "mean_abs_logit_err": 0.00945281982421875,
    "decision_agreement": 1.0,
-   "confidence_mae": 0.00025895698261261033,
-   "n_decisions": 50,
-   "coreml_accuracy": 0.34,
-   "torch_accuracy": 0.34,
+   "confidence_mae": 0.0020604654289245587,
+   "n_decisions": 250,
+   "coreml_accuracy": 0.724,
+   "torch_accuracy": 0.724,
    "accuracy_regression_pp": 0.0,
-   "wall_s": 2.2378029823303223
+   "wall_s": 3.9909250736236572
   }
  }
 }

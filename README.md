@@ -159,6 +159,39 @@ python 06_export_onnx.py --quantize
 
 Every script takes `--limit N` for a fast dry run, and `--config <workflow>` to train a single-domain specialist.
 
+### Apple Silicon: Core ML / Neural Engine
+
+The encoder + score head run on the Neural Engine as a fixed-shape Core ML
+program; the dynamic-schema bookkeeping (label-position gather, per-question
+softmax, temperature) stays on CPU, so adding questions still costs nothing.
+
+```bash
+# one-time: export fp16 ML Programs for the sequence buckets
+python export_coreml.py --ckpt jevlite.pt --seq-lens 256 512 1024 \
+    --min-macos 26            # fp16 @ macOS15 targets is broken - see ANE_REPORT
+
+python 05_serve.py --demo --backend coreml --compute-units cpu_and_ne
+python decide.py --backend coreml --compute-units cpu_and_ne
+python verify_coreml.py --ckpt jevlite.pt --limit 50    # parity report
+python benchmark_coreml.py --ckpt jevlite.pt            # latency report
+```
+
+Measured on M2 Max / macOS 26 (`BENCHMARK.md`, `ANE_REPORT.md`):
+
+- `cpu_and_ne` (GPU off) is **1.5–2.5× faster than Core ML CPU** and
+  **2.3–5.4× faster than PyTorch-CPU**; it ties PyTorch-MPS at seq 256 and
+  loses to it at 512/1024. `all` adds nothing — do not read it as ANE speed.
+- Full test split parity: **0.9965 decision agreement, zero accuracy
+  regression** (0.6445 vs 0.6430), confidence MAE 0.0024.
+- `fp32` export is bit-exact but cannot use the ANE — it is the parity
+  fallback.
+
+```python
+from engine import DecisionEngine
+engine = DecisionEngine(backend="coreml", compute_units="cpu_and_ne")
+engine.decide(state, questions)   # same {"label", "confidence", ...} shape
+```
+
 ### Files
 
 | | |
@@ -171,6 +204,10 @@ Every script takes `--limit N` for a fast dry run, and `--config <workflow>` to 
 | `plots.py` | six charts, rendered from the JSON each step writes |
 | `01_…` → `07_…` | the pipeline |
 | `smoke_test.py` | correctness checks, no GPU needed |
+| `engine.py` | `DecisionEngine(backend=...)` — one `decide()`, swappable backend |
+| `export_coreml.py` | Core ML export; patches the ops coremltools 9 lacks |
+| `coreml_backend.py` | ANE engine: bucket select, pad, predict, CPU-side decide |
+| `verify_coreml.py` / `benchmark_coreml.py` | parity + latency harnesses |
 | `legacy/` | the earlier fixed-head version, kept for comparison |
 
 ---

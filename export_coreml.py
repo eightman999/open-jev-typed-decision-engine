@@ -142,7 +142,10 @@ def main():
     p.add_argument("--precision", default="fp16", choices=["fp16", "fp32"],
                  help="fp16 is what makes the Neural Engine worth using; "
                       "fp32 is the parity fallback")
-    p.add_argument("--min-macos", type=int, default=15)
+    p.add_argument("--min-macos", type=int, default=26,
+                   help="DO NOT lower for fp16: macOS15-targeted fp16 kernels "
+                        "corrupt this model (max logit err 5.5 vs 0.04 at 26). "
+                        "See ANE_REPORT.md 'failed experiments'.")
     a = p.parse_args()
 
     ck = require_ckpt(a.ckpt)
