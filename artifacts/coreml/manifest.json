@@ -1,0 +1,17 @@
+{
+ "ckpt": "artifacts/jevlite-smoke.pt",
+ "encoder": "answerdotai/ModernBERT-base",
+ "max_len": 1024,
+ "precision": "fp16",
+ "min_macos": 15,
+ "temperatures": null,
+ "seq_lens": [
+  256
+ ],
+ "packages": {
+  "256": {
+   "path": "artifacts/coreml/jevlite-256.mlpackage",
+   "bytes": 298883940
+  }
+ }
+}
