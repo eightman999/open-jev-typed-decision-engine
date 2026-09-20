@@ -12,6 +12,7 @@ import argparse
 import json
 import torch
 from td_data import encode, collate
+from device import pick_device
 from model import JevLite, require_ckpt
 from typed_schema import iter_labels, Question
 
@@ -20,7 +21,7 @@ _engine = {}
 
 def load(ckpt="jevlite.pt", device=None):
     ck = require_ckpt(ckpt)
-    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dev = device or pick_device()
     m = JevLite(ck["encoder"])
     m.load_state_dict(ck["state_dict"])
     m.to(dev).eval()

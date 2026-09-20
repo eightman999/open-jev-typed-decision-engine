@@ -4,6 +4,11 @@
 *.onnx.data
 *.int8.onnx
 
+# Core ML artifacts - regenerate with export_coreml.py
+*.mlpackage
+*.mlmodelc
+*.mlmodel
+
 # run outputs - regenerate by rerunning the pipeline
 baselines.json
 history.json

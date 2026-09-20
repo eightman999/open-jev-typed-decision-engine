@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from transformers import (get_cosine_schedule_with_warmup,
                           get_linear_schedule_with_warmup)
 from td_data import load_split, TypedDecisions, collate, val_split
+from device import pick_device
 from model import JevLite, decision_loss, argmax_per_question, DEFAULT_ENCODER
 
 
@@ -59,7 +60,7 @@ if __name__ == "__main__":
                    help="tiny run to verify the loop before spending GPU time")
     a = p.parse_args()
 
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = pick_device()
     model = JevLite(a.encoder).to(dev)
     tok = model.tok
     tr_rows, va_rows = val_split(load_split("train", a.config, limit=a.limit))
