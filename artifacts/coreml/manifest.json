@@ -6,12 +6,17 @@
  "min_macos": 15,
  "temperatures": null,
  "seq_lens": [
-  256
+  512,
+  1024
  ],
  "packages": {
-  "256": {
-   "path": "artifacts/coreml/jevlite-256.mlpackage",
-   "bytes": 298883940
+  "512": {
+   "path": "artifacts/coreml/jevlite-512.mlpackage",
+   "bytes": 299212900
+  },
+  "1024": {
+   "path": "artifacts/coreml/jevlite-1024.mlpackage",
+   "bytes": 300264039
   }
  }
 }
