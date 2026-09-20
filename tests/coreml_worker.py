@@ -38,6 +38,7 @@ def main():
                 res = {"compute_units": eng.compute_units,
                        "max_seq": eng.max_seq, "max_len": eng.max_len,
                        "encode_len": eng.encode_len,
+                       "temperatures": eng.temperatures,
                        "buckets": sorted(eng._models)}
             elif req["op"] == "decide":
                 calls = 0

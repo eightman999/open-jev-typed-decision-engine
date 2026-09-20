@@ -12,6 +12,7 @@ onnx
 onnxruntime
 onnxscript                  # required by torch>=2.6 for torch.onnx.export
 # Core ML / ANE backend - Apple Silicon only (export_coreml.py, coreml_backend.py)
-coremltools>=9.0; sys_platform == "darwin"
+# <10: export_coreml.py registers missing ops through coremltools internals
+coremltools>=9.0,<10; sys_platform == "darwin"
 # tests/
 pytest

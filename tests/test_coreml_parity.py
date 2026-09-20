@@ -74,11 +74,13 @@ def test_grouped_softmax_matches_reference():
 # worker surfaces as a clean RuntimeError instead of a mid-suite SIGSEGV.
 
 import json
+import select
 import subprocess
 import sys
 
 _WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "coreml_worker.py")
+_READ_TIMEOUT_S = 120     # a hung worker is as dead as a crashed one
 
 
 class _WorkerEngine:
@@ -86,7 +88,8 @@ class _WorkerEngine:
 
     The worker is respawned transparently if it dies - the ANE heap-corruption
     crash is probabilistic (order ~1 in 15 predicts under memory pressure), so
-    a single restart carries the suite through.
+    one restart carries the suite through. A deterministic crash still fails
+    the test instead of respawning forever.
     """
 
     def __init__(self, pkg_dir, ckpt, compute_units):
@@ -96,25 +99,33 @@ class _WorkerEngine:
         self.last_label_calls = 0
 
     def _spawn(self):
+        old = getattr(self, "_p", None)
+        if old is not None and old.poll() is None:
+            old.kill()                      # hung predecessor, not a dead one
         pkg_dir, ckpt, cu = self._args
         self._p = subprocess.Popen(
             [sys.executable, _WORKER, pkg_dir, ckpt, cu],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
             cwd=os.path.dirname(os.path.dirname(_WORKER)))
 
-    def _call(self, req):
+    def _call(self, req, _retries=1):
         assert self._p.stdin and self._p.stdout
         try:
             self._p.stdin.write(json.dumps(req) + "\n")
             self._p.stdin.flush()
-            line = self._p.stdout.readline()
+            ready = select.select([self._p.stdout], [], [], _READ_TIMEOUT_S)[0]
+            line = self._p.stdout.readline() if ready else ""
         except (BrokenPipeError, ValueError):
             line = ""
         if not line:
             if req["op"] == "quit":         # already dead - nothing to quit
                 return {"ok": True}
+            if _retries <= 0:
+                raise RuntimeError(
+                    f"engine worker died or timed out on {req['op']!r} "
+                    f"(exit {self._p.poll()})")
             self._spawn()                   # respawn and retry once
-            return self._call(req)
+            return self._call(req, _retries - 1)
         res = json.loads(line)
         if not res["ok"]:
             raise RuntimeError(f"engine worker: {res['error']}")
@@ -127,14 +138,20 @@ class _WorkerEngine:
         return res["result"]
 
     def __getattr__(self, name):            # compute_units, max_seq, ...
-        return self._info[name]
+        try:
+            return self.__dict__["_info"][name]
+        except KeyError:
+            raise AttributeError(name) from None
 
     def close(self):
         try:
             self._call({"op": "quit"})
         except Exception:
             pass
-        self._p.wait(timeout=10)
+        try:
+            self._p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._p.kill()
 
 
 @pytest.fixture(scope="module")
@@ -250,3 +267,33 @@ def test_pytorch_coreml_decision_parity(engine):
             tot += 1
     assert agree / tot >= 0.95, f"decision agreement {agree}/{tot}"
     assert np.mean(conf_errs) <= 0.02
+
+
+@needs_artifacts
+def test_package_metadata_only_load():
+    """ckpt=None: encoder/max_len/temperatures come from manifest + package.
+
+    The manifest stores temperatures as a JSON array while package metadata
+    stores the same value as a JSON string - both must parse.
+    """
+    from typed_schema import Question
+    e = _WorkerEngine(PKG_DIR, "-", "cpu_only")
+    try:
+        assert len(e.temperatures) == 3 and all(t > 0 for t in e.temperatures)
+        assert e.max_len > 0 and e.max_seq >= 1024
+        out = e.decide("refund request for a duplicate charge",
+                       {"r": Question.noul("This is about a refund.")})
+        assert out["r"]["label"] in ("true", "false")
+    finally:
+        e.close()
+
+
+@needs_artifacts
+def test_seq_lens_filter_rejects_missing_bucket():
+    """Asking for an unexported bucket fails clearly - before any model load,
+    not with a cryptic MLModel-on-a-directory error."""
+    pytest.importorskip("coremltools")
+    from coreml_backend import CoreMLEngine
+    with pytest.raises(FileNotFoundError, match="seq_lens"):
+        CoreMLEngine(PKG_DIR, ckpt=CKPT, compute_units="cpu_only",
+                     seq_lens=[8192])

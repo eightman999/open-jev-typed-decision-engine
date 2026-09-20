@@ -74,6 +74,10 @@ class CoreMLEngine:
                     "export_coreml.py first")
             want = seq_lens or sorted(found)
             self._pkg = {s: found[s] for s in want if s in found}
+            if not self._pkg:
+                raise FileNotFoundError(
+                    f"no jevlite-*.mlpackage for seq_lens {sorted(seq_lens)} "
+                    f"under {packages} - available: {sorted(found)}")
             manifest = os.path.join(packages, "manifest.json")
             if os.path.exists(manifest):
                 meta = json.load(open(manifest))
@@ -110,11 +114,13 @@ class CoreMLEngine:
         self.max_len = int(ck.get("max_len") or meta.get("max_len")
                            or first.user_defined_metadata.get("max_len")
                            or max(self._models))
-        temps = (ck.get("temperatures")
-                 or json.loads(meta.get("temperatures") or "null")
-                 or json.loads(first.user_defined_metadata.get(
-                     "temperatures") or "null"))
-        # per-type temperature; index order matches typed_schema.TYPES
+        # per-type temperature; index order matches typed_schema.TYPES. The
+        # manifest stores it as a JSON array, the package metadata as a JSON
+        # string - accept either shape.
+        def _temps(v):
+            return v if v is None or isinstance(v, list) else json.loads(v)
+        temps = (ck.get("temperatures") or _temps(meta.get("temperatures"))
+                 or _temps(first.user_defined_metadata.get("temperatures")))
         self.temperatures = list(temps) if temps else [1.0, 1.0, 1.0]
 
         self.tok = AutoTokenizer.from_pretrained(self.encoder_name)
@@ -176,20 +182,7 @@ class CoreMLEngine:
         row = {"id": "live", "state": state, "questions": questions, "gold": {}}
         enc = encode(row, self.tok, self.encode_len, self.qid, self.lid,
                      with_gold=False)
-        lg = self.label_logits(enc)
-
-        out, i = {}, 0
-        for gi, qname in enumerate(enc["qnames"]):
-            labels = enc["labels"][gi]
-            n = len(labels)
-            t = self.temperatures[enc["qtype"][gi]] if calibrated else 1.0
-            probs = _softmax(lg[i:i + n] / t)
-            dist = dict(zip(labels, (round(float(v), 4) for v in probs)))
-            top = max(dist, key=dist.get)
-            out[qname] = {"label": top, "confidence": dist[top],
-                          "probabilities": dist}
-            i += n
-        return out
+        return self.decide_enc(enc, calibrated)
 
     def decide_enc(self, enc, calibrated=True):
         """decide() on a pre-encoded row - the path the parity harness uses."""

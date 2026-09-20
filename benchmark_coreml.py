@@ -28,7 +28,7 @@ def pct(xs, q):
     return float(np.percentile(np.asarray(xs, dtype=np.float64), q))
 
 
-def timeit(fn, iters, warmup=WARMUP):
+def timeit(fn, iters, warmup):
     for _ in range(warmup):
         fn()
     ts = []
@@ -57,7 +57,6 @@ def make_inputs(model, ckpt, seq_len):
 
 
 def main():
-    global WARMUP
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", default="jevlite.pt")
     p.add_argument("--pkg-dir", default="artifacts/coreml")
@@ -72,7 +71,6 @@ def main():
                             "coreml_cpu_and_ne", "coreml_all"])
     p.add_argument("--out", default="artifacts/benchmark.json")
     a = p.parse_args()
-    WARMUP = a.warmup
 
     ck = require_ckpt(a.ckpt)
     report = {"ckpt": a.ckpt, "iters": a.iters, "warmup": a.warmup,
@@ -145,7 +143,7 @@ def main():
                 m = engines[b][s]
                 feed = {"input_ids": ids, "attention_mask": att}
                 fn = lambda: m.predict(feed)
-            r = timeit(fn, a.iters)
+            r = timeit(fn, a.iters, a.warmup)
             r["tokens_per_s"] = r["req_per_s"] * s
             report["results"][str(s)][b] = r
             print(f"  {b:>18s}  median {r['median_ms']:7.1f} ms  "
