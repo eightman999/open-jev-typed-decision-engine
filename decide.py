@@ -128,6 +128,10 @@ def main():
     p.add_argument("--compute-units", default="cpu_and_ne",
                    choices=["cpu_only", "cpu_and_ne", "cpu_and_gpu", "all"],
                    help="coreml backend only; cpu_and_ne keeps the GPU off")
+    p.add_argument("--coreml-mode", default="worker",
+                   choices=["worker", "inprocess"],
+                   help="worker isolates ANE in a subprocess (default); "
+                        "inprocess is diagnostic only")
     p.add_argument("--pkg-dir", default="artifacts/coreml")
     a = p.parse_args()
 
@@ -138,7 +142,7 @@ def main():
     spec.loader.exec_module(S)
     print("loading the model...", flush=True)
     e = S.load(a.ckpt, backend=a.backend, compute_units=a.compute_units,
-               pkg_dir=a.pkg_dir)
+               pkg_dir=a.pkg_dir, coreml_mode=a.coreml_mode)
     name = a.schema
     print(f"ready on {e['dev']}   schema: {name}   "
           f"temperatures {[round(t, 3) for t in e['temps']]}")

@@ -20,11 +20,15 @@ _engine = {}
 
 
 def load(ckpt="jevlite.pt", device=None, backend="torch",
-         compute_units="cpu_and_ne", pkg_dir="artifacts/coreml"):
+         compute_units="cpu_and_ne", pkg_dir="artifacts/coreml",
+         coreml_mode="worker"):
     if backend == "coreml":
-        from coreml_backend import CoreMLEngine
-        eng = CoreMLEngine(pkg_dir, ckpt=ckpt, compute_units=compute_units)
-        _engine.update(model=eng, dev=f"coreml:{compute_units}",
+        # "worker" (default) keeps the ANE runtime in a subprocess - the heap
+        # corruption in ANE_REPORT.md cannot take down this process.
+        # "inprocess" is a debugging option only.
+        from engine import _coreml_impl
+        eng, suffix = _coreml_impl(pkg_dir, ckpt, compute_units, coreml_mode)
+        _engine.update(model=eng, dev=f"coreml:{compute_units}{suffix}",
                        max_len=eng.encode_len, temps=eng.temperatures)
         return _engine
     ck = require_ckpt(ckpt)
@@ -100,10 +104,14 @@ if __name__ == "__main__":
     p.add_argument("--compute-units", default="cpu_and_ne",
                    choices=["cpu_only", "cpu_and_ne", "cpu_and_gpu", "all"],
                    help="coreml backend only; cpu_and_ne keeps the GPU off")
+    p.add_argument("--coreml-mode", default="worker",
+                   choices=["worker", "inprocess"],
+                   help="worker isolates ANE in a subprocess (default, safe "
+                        "for --serve); inprocess is diagnostic only")
     p.add_argument("--pkg-dir", default="artifacts/coreml")
     a = p.parse_args()
     e = load(a.ckpt, backend=a.backend, compute_units=a.compute_units,
-             pkg_dir=a.pkg_dir)
+             pkg_dir=a.pkg_dir, coreml_mode=a.coreml_mode)
     if e["temps"]:
         print(f"loaded on {e['dev']}  temperatures={[round(t,3) for t in e['temps']]}")
 
