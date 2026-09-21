@@ -36,28 +36,39 @@ are mapped back to canonical response identity before scoring.
 
 - calls per system: 620 pairs × 2 orders = **1240**
 - random forced-choice baseline: **50%** (binary gold; abstentions count wrong
-  in accuracy and are also reported via coverage / conditional accuracy)
+  in overall accuracy and are also reported via coverage /
+  accuracy_given_decision)
 
 ## Main results
 
+Metric definitions (denominators explicit):
+
+- `overall_accuracy_abstain_wrong`: correct decisive calls / all non-failure
+  calls — `uncertain` counts as wrong
+- `coverage`: decisive calls / non-failure calls
+- `accuracy_given_decision`: correct decisive / decisive calls
+- `binary_forced_argmax_accuracy`: argmax over the A/B probability mass only
+  (uncertain excluded), mapped canonically / calls with probabilities
+
 | metric | Jev | JevLite CoreML |
 |---|---|---|
-| accuracy (forced) | **0.733** | **0.112** |
+| overall_accuracy_abstain_wrong | **0.733** | **0.112** |
 | strict-pair accuracy | 0.626 | 0.000 |
 | coverage | 0.968 | 0.239 |
-| conditional accuracy | 0.758 | **0.470** |
+| accuracy_given_decision | 0.758 | 0.470 |
+| binary_forced_argmax_accuracy | 0.752 | **0.491** |
 | selective risk | 0.243 | 0.530 |
 | abstention rate | 0.032 | 0.761 |
 | wrong-answer rate | 0.235 | 0.127 |
 | swap consistency | 0.779 | 0.597 |
-| original-order acc | 0.745 | 0.102 |
-| swapped-order acc | 0.721 | 0.123 |
+| original-order acc (abstain-wrong) | 0.745 | 0.102 |
+| swapped-order acc (abstain-wrong) | 0.721 | 0.123 |
 | first-position pick rate (decided) | 0.54 | **0.00** |
 | failures | none | none |
 
-### Split breakdown
+### Split breakdown (overall_accuracy_abstain_wrong / coverage)
 
-| split | n calls | Jev acc / cov | JevLite acc / cov |
+| split | n calls | Jev | JevLite |
 |---|---|---|---|
 | gpt | 700 | 0.729 / 0.967 | 0.107 / 0.236 |
 | claude | 540 | 0.739 / 0.969 | 0.119 / 0.243 |
@@ -66,7 +77,13 @@ Per-source table is in `artifacts/judgebench_summary.json` (`per_source`;
 mmlu-pro-* sources have n=44 calls each and are marked `low_n` — no strong
 conclusions drawn from them).
 
-### Outcome matrix (per pair, canonical, both passes merged by strict rule)
+### Outcome matrices
+
+Per-call matrices compare the two systems on one inference call each;
+the strict-pair matrix first collapses each system's two passes into a
+pair-level state (correct | wrong | abstain | mixed).
+
+**original order (pass 1 only, n=620)**
 
 | outcome | count |
 |---|---|
@@ -77,6 +94,36 @@ conclusions drawn from them).
 | JevLite abstain + Jev correct | **349** |
 | JevLite abstain + Jev wrong | 113 |
 
+**swapped order (pass 2 only, n=620)**
+
+| outcome | count |
+|---|---|
+| both correct | 50 |
+| Jev only correct | 47 |
+| JevLite only correct | 26 |
+| both wrong | 15 |
+| JevLite abstain + Jev correct | **350** |
+| JevLite abstain + Jev wrong | 132 |
+
+**strict pair (pair-level, n=620)**
+
+| outcome | count |
+|---|---|
+| JevLite abstain + Jev correct | 239 |
+| JevLite abstain + Jev wrong | 41 |
+| mixed_or_inconsistent | 340 |
+
+JevLite reaches neither a strict "correct" nor a strict "wrong" pair state:
+370 pairs abstain in both passes, 250 pairs are mixed (decisive in exactly
+one pass, or inconsistent). Detail:
+`jev=correct+jl=abstain` 239, `jev=correct+jl=mixed` 149,
+`jev=mixed+jl=abstain` 79, `jev=mixed+jl=mixed` 58,
+`jev=wrong+jl=abstain` 41, `jev=wrong+jl=mixed` 40,
+`jev=abstain+jl=abstain` 11, `jev=abstain+jl=mixed` 3.
+
+The earlier headline numbers (349/113 etc.) were original-order counts;
+the label has been corrected and all three scopes are now reported.
+
 ### Position bias
 
 - Jev: 54% of decided calls pick the first displayed position; swap flips
@@ -84,15 +131,18 @@ conclusions drawn from them).
 - JevLite: **0% of decided calls pick the first position.** Across all 1240
   calls the verdicts were `uncertain` 944 / `candidate_b` 296 /
   `candidate_a` **0**. `candidate_a` softmax probability never exceeded
-  0.319 (mean 0.110), i.e. the first-position label is structurally unable
-  to win. Swap flips: 0 A→B, 46 B→A, plus 204 decisive↔uncertain churn.
+  0.319 (mean 0.110): `candidate_a` never won under the tested workloads.
+  The root-cause audit (`JEVLITE_NEVER_A_AUDIT.md`) shows the suppression
+  tracks the *first sorted label position*, not the candidate_a meaning.
+  Swap flips: 0 A→B, 46 B→A, plus 204 decisive↔uncertain churn.
 
 ### Truncation
 
 - JevLite (token cap = 1024, state absorbs truncation): 774/1240 calls
   truncated (62.4%); longest input 2855 tokens, max dropped 1831.
-  Forced accuracy: non-truncated 0.485 (n=466) vs truncated 0.461 (n=774) —
-  truncation is not the main failure driver.
+  accuracy_given_decision: non-truncated 0.485 (n=466) vs truncated 0.461
+  (n=774) — truncation is not the main failure driver (short synthetic
+  inputs reproduce the same pathology; see the audit report).
 - Jev (state char cap 6000): 242/1240 calls had state chars dropped.
 - Effective inputs differ by design (Jev char cap vs JevLite 1024-token cap);
   both are the systems' production truncation behavior, reported, not hidden.
@@ -115,35 +165,41 @@ backend under test; parity evidence is sufficient).
 
 ## Interpretation
 
-1. **Jev transfers to independent objective judging.** 73.3% accuracy vs the
-   50% baseline, with meaningful confidence calibration (accuracy rises
-   monotonically 0.48 → 0.92 across confidence buckets). It is imperfect —
-   strict-pair 62.6% and 78% swap consistency show real position bias — but
-   clearly above chance on gold it never trained against.
+1. **Jev transfers to independent objective judging.** 73.3% overall
+   accuracy (abstain-wrong) vs the 50% baseline, and confidence is
+   positively associated with empirical accuracy (0.48 → 0.92 across
+   confidence buckets — a ranking statement, not a calibration claim; no
+   ECE/Brier analysis was run). It is imperfect — strict-pair 62.6% and
+   78% swap consistency show real position bias — but clearly above chance
+   on external gold that was not generated from Jev outputs or prior judge
+   outputs.
 
-2. **JevLite does not transfer.** Forced accuracy 11.2%, and even its
-   *decisive* answers are below chance (conditional accuracy 0.470 < 0.50).
-   This is not "conservative abstention":
+2. **JevLite does not transfer.** Overall accuracy 11.2% (abstain-wrong),
+   and there is no evidence of above-chance accuracy among decided calls
+   (accuracy_given_decision 0.470, binary_forced_argmax 0.491 vs 0.50
+   baseline). This is not "conservative abstention":
 
-   - When JevLite abstains, Jev is still right 349/462 = **75.5%** — identical
-     to Jev's overall conditional accuracy (75.8%). The abstention signal does
-     not identify harder cases at all.
-   - The model **never selects the first displayed position** on this task —
-     a label-position prior, not semantic label reading. It only ever emits
-     `candidate_b` (2nd position) or `uncertain` (3rd position).
-   - The same never-A pathology reproduces on the Torch backend, ruling out
+   - When JevLite abstains, Jev is still right at its base rate
+     (original-order: 349/462 = 75.5% ≈ Jev's 75.8% accuracy_given_decision).
+     The abstention signal does not identify harder cases.
+   - The model never selects the first displayed position under the tested
+     workloads — shown by the audit to be a first-label-position prior, not
+     semantic label reading (suppression follows the sorted position when
+     label meanings are permuted).
+   - The same pathology reproduces on the Torch backend, ruling out
      CoreML/worker artifacts.
 
 3. **Spec's expected branch: A.** Jev strong / JevLite weak. JevLite's
-   historical-workload `uncertain` collapse (99.8% in the novllm corpus) was
-   not workload-specific — it is a general label-usage pathology. Training
-   and OOD label-generalization need investigation before JevLite can act as
-   any kind of judge, selective or otherwise.
+   historical-workload `uncertain` collapse (99.8% in the novllm corpus)
+   was not workload-specific. The audit (`JEVLITE_NEVER_A_AUDIT.md`)
+   localizes the cause: the training distribution contained no 3-label
+   choice questions and the model carries a positional prior that
+   suppresses the first sorted label slot on OOD schemas.
 
 4. **"Does JevLite resemble Jev?" was not the question — and the answer to
-   the real questions is:** Jev ≈ 73% correct on independent gold; JevLite ≈
-   11% (47% when it dares to answer); `uncertain` is **not** functioning as
-   useful abstention.
+   the real questions is:** Jev ≈ 73% correct on independent gold; JevLite
+   ≈ 11% overall, with no evidence of above-chance accuracy among decided
+   calls; `uncertain` is not functioning as useful abstention.
 
 ## Reproducibility
 
@@ -165,6 +221,6 @@ backend under test; parity evidence is sufficient).
   tokenization/truncation is opaque (only the 6000-char state cap is known).
 - Control judges (Gemma/Qwen on JudgeBench) were not run: optional per spec;
   the HAI API key was not available in this environment.
-- JevLite's never-A was observed on 1240 calls; the positional-prior
-  explanation is consistent with all evidence but the internal mechanism
-  (attention over `[LID]` positions vs label text) is not fully dissected.
+- JevLite's never-A was confirmed as a first-sorted-label-position prior by
+  the permutation audit (`JEVLITE_NEVER_A_AUDIT.md`); the encoder-internal
+  mechanism (why position 0 specifically) is not fully dissected.
