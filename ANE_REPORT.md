@@ -145,12 +145,13 @@ idle. Full table in `BENCHMARK.md`.
    after which the next unrelated native call faults (ssl `poll`,
    `pathlib.rglob`). ~1 in 15 predicts under memory pressure; observed
    during pytest runs concurrent with MPS training, and it also killed a
-   quiet-machine test run once. `tests/coreml_worker.py` isolates the
-   engine in a child process with transparent respawn — the suite is
-   deterministic (10/10 green). **Production embedding should keep the
-   engine in its own process too** (or verify the fix on your OS version);
-   `engine.py`/`05_serve.py` callers on this machine are single-shot and
-   exited cleanly in every direct run.
+   quiet-machine test run once. Since `feat/coreml-ane-worker-bench`,
+   **`coreml_worker.py` keeps the engine in a child process in production
+   too** (`DecisionEngine`/`05_serve.py` default `coreml_mode="worker"`,
+   respawn-once + periodic recycle; `inprocess` is diagnostic-only).
+   `CoreMLEngine._keepalive` still retains predict outputs inside the
+   worker — deallocating them is what trips the bug — bounded by worker
+   lifetime and `recycle_every` (10k decisions ≈ tens of MB).
 5. transformers 5.17 + coremltools 9 needed three missing-op registrations
    (above). torch 2.14 is untested by coremltools 9 but converted cleanly.
 6. Copying predict outputs off the ObjC-bridged buffer and retaining the
@@ -169,6 +170,14 @@ idle. Full table in `BENCHMARK.md`.
   palettization would shrink it — deliberately not done yet because
   accuracy impact must be measured first.
 - No batching support: all numbers are batch=1.
+
+## Jev competition benchmark
+
+The worker-isolated backend was benchmarked against the historical Jev
+judging workload used to build the novllm dataset (11,842 paired verdicts
+from the longspan-resplit judge queues). Results - paired agreement,
+confidence routing, latency/throughput per backend, and the honest
+limitations - are in **[JEV_COMPETITION.md](JEV_COMPETITION.md)**.
 
 ## Best next experiment
 

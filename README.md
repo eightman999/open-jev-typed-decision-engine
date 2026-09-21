@@ -192,6 +192,27 @@ engine = DecisionEngine(backend="coreml", compute_units="cpu_and_ne")
 engine.decide(state, questions)   # same {"label", "confidence", ...} shape
 ```
 
+Production note: `backend="coreml"` runs inside `coreml_worker.py` — a
+supervised subprocess (respawn once on crash/timeout, periodic recycle) —
+because the ANE runtime can corrupt the host heap when bridged predict
+outputs are deallocated (details in `ANE_REPORT.md`). `--coreml-mode
+inprocess` exists for debugging only; `05_serve.py --serve` never runs ANE
+in the FastAPI process by default.
+
+Benchmark vs the real novllm judging workload (cached historical Jev
+verdicts, zero API cost):
+
+```bash
+python benchmark_jev_competition.py \
+    --input /path/to/queue_*.resplit.jsonl \
+    --jev-results /path/to/verdicts_*.resplit.jev.jsonl \
+    --backend coreml:cpu_and_ne --out artifacts/jev_competition.json
+```
+
+See `JEV_COMPETITION.md` for the paired-agreement, routing, and latency
+results. Historical Jev agreement is **not** accuracy — Jev is a reference
+system, not ground truth.
+
 ### Files
 
 | | |
@@ -207,6 +228,8 @@ engine.decide(state, questions)   # same {"label", "confidence", ...} shape
 | `engine.py` | `DecisionEngine(backend=...)` — one `decide()`, swappable backend |
 | `export_coreml.py` | Core ML export; patches the ops coremltools 9 lacks |
 | `coreml_backend.py` | ANE engine: bucket select, pad, predict, CPU-side decide |
+| `coreml_worker.py` | subprocess isolation for the Core ML engine (production default) |
+| `benchmark_jev_competition.py` | Jev-vs-JevLite benchmark on the real novllm judge queues |
 | `verify_coreml.py` / `benchmark_coreml.py` | parity + latency harnesses |
 | `legacy/` | the earlier fixed-head version, kept for comparison |
 
