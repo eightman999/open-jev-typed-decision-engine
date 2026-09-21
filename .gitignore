@@ -37,5 +37,9 @@ artifacts/jev_disagreements*.jsonl
 artifacts/jev_human_review.jsonl
 artifacts/jev_competition_smoke.json
 
+# LLM silver-judge raw transcripts embed full prompts/responses (large);
+# silver labels, review queue and summary JSONs stay committed
+artifacts/jev_llm_judge_raw*.jsonl
+
 # run artifacts are gitignored, but the committed copies under docs/ are not
 !docs/charts/*.png

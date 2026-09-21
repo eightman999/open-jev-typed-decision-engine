@@ -1,0 +1,1 @@
+{"queue_id": "a2e0191e1c864bd9", "sample_id": "s0244", "judge_model": "gemma-4-31b-it", "silver_verdict": null, "stable_silver": false, "consistent": false, "min_confidence": 1.0, "pass1_verdict": "A", "pass2_verdict": "A", "jev_verdict": "content", "jevlite_verdict": "uncertain", "needs_review": true, "review_reason": "inconsistent", "tokens": 1062}
