@@ -71,7 +71,7 @@ def test_correct_after_swap():
     r1 = _row("p", 1, "candidate_a", "A")
     r2 = _row("p", 2, "candidate_b", "A")
     st = E.system_stats([r1, r2], [])
-    assert st["accuracy"] == 1.0
+    assert st["overall_accuracy_abstain_wrong"] == 1.0
     assert st["strict_pair_accuracy"] == 1.0
     assert st["swap_consistency"] == 1.0
 
@@ -81,7 +81,7 @@ def test_wrong_after_swap():
     r1 = _row("p", 1, "candidate_b", "A")
     r2 = _row("p", 2, "candidate_a", "A")
     st = E.system_stats([r1, r2], [])
-    assert st["accuracy"] == 0.0
+    assert st["overall_accuracy_abstain_wrong"] == 0.0
     assert st["strict_pair_accuracy"] == 0.0
     assert st["swap_consistency"] == 1.0
 
@@ -90,10 +90,10 @@ def test_uncertain_is_not_correct():
     r1 = _row("p", 1, "uncertain", "A")
     r2 = _row("p", 2, "uncertain", "A")
     st = E.system_stats([r1, r2], [])
-    assert st["accuracy"] == 0.0
+    assert st["overall_accuracy_abstain_wrong"] == 0.0
     assert st["coverage"] == 0.0
     assert st["abstention_rate"] == 1.0
-    assert st["conditional_accuracy"] is None
+    assert st["accuracy_given_decision"] is None
 
 
 def test_malformed_is_not_uncertain():
@@ -121,7 +121,7 @@ def test_coverage_and_conditional():
             _row("c", 2, "uncertain", "A")]
     st = E.system_stats(rows, [])
     assert st["coverage"] == pytest.approx(4 / 6)
-    assert st["conditional_accuracy"] == pytest.approx(0.5)
+    assert st["accuracy_given_decision"] == pytest.approx(0.5)
     assert st["selective_risk"] == pytest.approx(0.5)
     assert st["abstention_rate"] == pytest.approx(2 / 6)
     # strict pair: pair a both correct -> 1/3
@@ -165,6 +165,154 @@ def test_truncation_buckets():
     assert st["truncation"]["<=512"]["n"] == 1
     assert st["truncation"][">1024"]["n"] == 1
     assert st["truncation"]["truncated"]["n"] == 1
+
+
+# --- outcome matrix separation --------------------------------------------------
+
+def _sys_rows(system, pairs, pick):
+    """Emit pass1+pass2 rows; pick(pair, ps) -> verdict label."""
+    rows = []
+    for pid, gold in pairs:
+        for ps in (1, 2):
+            rows.append(_row(pid, ps, pick(pid, ps), gold, system))
+    return rows
+
+
+def _mkpairs(n, label="A>B"):
+    gold = A.gold_winner(label)
+    return ([(f"p{i}", gold) for i in range(n)],
+            [{"pair_id": f"p{i}", "split": "gpt", "source": "s",
+              "label": label} for i in range(n)])
+
+
+def test_outcome_matrices_are_separated():
+    # jev: correct both passes; jevlite: abstain both passes on half,
+    # wrong both passes on the other half -> original/swapped identical
+    # here but strict-pair must exist as its own key.
+    pairlist, pairs = _mkpairs(4)
+    rows = _sys_rows("jev", pairlist,
+                     lambda pid, ps: "candidate_a" if ps == 1
+                     else "candidate_b")
+    rows += _sys_rows("jevlite-coreml", pairlist,
+                      lambda pid, ps: "uncertain"
+                      if pid in ("p0", "p1")
+                      else ("candidate_b" if ps == 1 else "candidate_a"))
+    res, _ = E.analyze(rows, pairs, type("A", (), {})())
+    for k in ("outcome_matrix_original", "outcome_matrix_swapped",
+              "outcome_matrix_strict_pair"):
+        assert k in res
+    mo = res["outcome_matrix_original"]
+    assert mo["jl_abstain_jev_correct"] == 2
+    assert mo["jev_only"] == 2
+    mt = res["outcome_matrix_strict_pair"]
+    assert mt["jl_abstain_jev_correct"] == 2
+    assert mt["jev_only"] == 2
+
+
+def test_outcome_matrix_swapped_scope():
+    # jevlite decisive only on pass 2 -> swapped matrix differs from original
+    pairlist, pairs = _mkpairs(2)
+    rows = _sys_rows("jev", pairlist,
+                     lambda pid, ps: "candidate_a" if ps == 1
+                     else "candidate_b")
+    rows += _sys_rows("jevlite-coreml", pairlist,
+                      lambda pid, ps: "uncertain" if ps == 1
+                      else "candidate_b")   # pass2 canon A = correct
+    res, _ = E.analyze(rows, pairs, type("A", (), {})())
+    assert res["outcome_matrix_original"]["jl_abstain_jev_correct"] == 2
+    assert res["outcome_matrix_swapped"]["both_correct"] == 2
+    # pair-level: one pass abstain + one decisive -> mixed, not abstain
+    assert res["outcome_matrix_strict_pair"]["mixed_or_inconsistent"] == 2
+
+
+def test_disagreements_include_both_passes():
+    pairlist, pairs = _mkpairs(1)
+    rows = _sys_rows("jev", pairlist,
+                     lambda pid, ps: "candidate_a" if ps == 1
+                     else "candidate_b")
+    rows += _sys_rows("jevlite-coreml", pairlist,
+                      lambda pid, ps: "candidate_b" if ps == 1
+                      else "candidate_a")   # canon B both = wrong
+    res, dis = E.analyze(rows, pairs, type("A", (), {})())
+    assert len(dis) == 1
+    assert set(dis[0]["jev"]) == {"pass1", "pass2"}
+    assert set(dis[0]["jevlite"]) == {"pass1", "pass2"}
+
+
+# --- metric denominators ---------------------------------------------------------
+
+def test_binary_forced_argmax():
+    # uncertain verdict but probabilities favour A -> forced argmax = canon A
+    r = _row("p", 1, "uncertain", "A")
+    r["probabilities"] = {"candidate_a": 0.4, "candidate_b": 0.1,
+                          "uncertain": 0.5}
+    assert E._binary_forced(r) == "A"
+    r2 = _row("p", 2, "uncertain", "A")  # swapped: display B = canon A
+    r2["probabilities"] = {"candidate_a": 0.1, "candidate_b": 0.4,
+                           "uncertain": 0.5}
+    assert E._binary_forced(r2) == "A"
+    st = E.system_stats([r, r2], [])
+    assert st["binary_forced_argmax_accuracy"] == 1.0
+    assert st["overall_accuracy_abstain_wrong"] == 0.0
+
+
+def test_binary_forced_missing_probs():
+    st = E.system_stats([_row("p", 1, "candidate_a", "A")], [])
+    assert st["binary_forced_argmax_accuracy"] is None
+    assert st["binary_forced_argmax_n"] == 0
+
+
+# --- baseline judges ---------------------------------------------------------
+
+def _baseline_rows(verdict_fn, n=10):
+    pairlist, _ = _mkpairs(n)
+    return _sys_rows("sys", pairlist, verdict_fn)
+
+
+def test_baseline_always_a():
+    # picks displayed A every call -> canon = original A pass1, B pass2.
+    # gold A>B -> pass1 right, pass2 wrong. overall 0.5, strict 0, swap 0.
+    st = E.system_stats(_baseline_rows(lambda pid, ps: "candidate_a"), [])
+    assert st["overall_accuracy_abstain_wrong"] == 0.5
+    assert st["coverage"] == 1.0
+    assert st["accuracy_given_decision"] == 0.5
+    assert st["strict_pair_accuracy"] == 0.0
+    assert st["swap_consistency"] == 0.0
+
+
+def test_baseline_always_b():
+    st = E.system_stats(_baseline_rows(lambda pid, ps: "candidate_b"), [])
+    assert st["overall_accuracy_abstain_wrong"] == 0.5
+    assert st["strict_pair_accuracy"] == 0.0
+    assert st["swap_consistency"] == 0.0
+
+
+def test_baseline_always_uncertain():
+    st = E.system_stats(_baseline_rows(lambda pid, ps: "uncertain"), [])
+    assert st["overall_accuracy_abstain_wrong"] == 0.0
+    assert st["coverage"] == 0.0
+    assert st["accuracy_given_decision"] is None
+    assert st["abstention_rate"] == 1.0
+    # both passes uncertain -> canonical consistent (both "uncertain")
+    assert st["swap_consistency"] == 1.0
+
+
+def test_baseline_alternating():
+    # alternates canonical pick per pass -> 50% overall, 0 strict, 0 consistent
+    st = E.system_stats(
+        _baseline_rows(lambda pid, ps: "candidate_a"), [])
+    assert st["overall_accuracy_abstain_wrong"] == 0.5
+
+
+def test_baseline_random_ab():
+    # deterministic pseudo-random by pair/pass index -> sanity bounds only
+    import hashlib
+    def pick(pid, ps):
+        h = int(hashlib.sha1(f"{pid}{ps}".encode()).hexdigest(), 16)
+        return "candidate_a" if h % 2 else "candidate_b"
+    st = E.system_stats(_baseline_rows(pick, 60), [])
+    assert 0.2 <= st["overall_accuracy_abstain_wrong"] <= 0.8
+    assert st["coverage"] == 1.0
 
 
 def test_resume_skips_terminal_verdicts(tmp_path):
