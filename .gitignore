@@ -30,5 +30,12 @@ venv/
 # generated for a live Colab session; regenerate with make_patch_cell.py
 patch_cell.txt
 
+# Jev competition benchmark - per-item rows and review samples can be large;
+# the small report JSONs stay committed
+artifacts/jev_items_*.jsonl
+artifacts/jev_disagreements*.jsonl
+artifacts/jev_human_review.jsonl
+artifacts/jev_competition_smoke.json
+
 # run artifacts are gitignored, but the committed copies under docs/ are not
 !docs/charts/*.png
