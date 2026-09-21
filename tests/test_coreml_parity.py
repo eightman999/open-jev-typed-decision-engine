@@ -65,99 +65,18 @@ def test_grouped_softmax_matches_reference():
 
 # --- Core ML engine ---------------------------------------------------------
 #
-# The engine runs in a child process. On this machine the ANE runtime has been
-# observed to corrupt the host heap: crash reports show an ObjC object graph
-# containing a PyObject* being destroyed on a background dispatch thread
-# (objc_destructInstance -> _PyObject_Free, EXC_BAD_ACCESS at 0x10), after
-# which the next unrelated native call (ssl poll, pathlib rglob) faults.
-# Keeping ANE out of the pytest process makes the suite deterministic; a dead
-# worker surfaces as a clean RuntimeError instead of a mid-suite SIGSEGV.
+# The engine runs in the production worker subprocess (coreml_worker.py) -
+# the same isolation the serving path uses, so the suite exercises what
+# ships. A dead worker surfaces as a clean RuntimeError instead of a
+# mid-suite SIGSEGV from the ANE heap issue documented in ANE_REPORT.md.
 
-import json
-import select
-import subprocess
-import sys
-
-_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       "coreml_worker.py")
-_READ_TIMEOUT_S = 120     # a hung worker is as dead as a crashed one
-
-
-class _WorkerEngine:
-    """decide() proxy for a CoreMLEngine living in tests/coreml_worker.py.
-
-    The worker is respawned transparently if it dies - the ANE heap-corruption
-    crash is probabilistic (order ~1 in 15 predicts under memory pressure), so
-    one restart carries the suite through. A deterministic crash still fails
-    the test instead of respawning forever.
-    """
-
-    def __init__(self, pkg_dir, ckpt, compute_units):
-        self._args = (pkg_dir, ckpt, compute_units)
-        self._spawn()
-        self._info = self._call({"op": "info"})
-        self.last_label_calls = 0
-
-    def _spawn(self):
-        old = getattr(self, "_p", None)
-        if old is not None and old.poll() is None:
-            old.kill()                      # hung predecessor, not a dead one
-        pkg_dir, ckpt, cu = self._args
-        self._p = subprocess.Popen(
-            [sys.executable, _WORKER, pkg_dir, ckpt, cu],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-            cwd=os.path.dirname(os.path.dirname(_WORKER)))
-
-    def _call(self, req, _retries=1):
-        assert self._p.stdin and self._p.stdout
-        try:
-            self._p.stdin.write(json.dumps(req) + "\n")
-            self._p.stdin.flush()
-            ready = select.select([self._p.stdout], [], [], _READ_TIMEOUT_S)[0]
-            line = self._p.stdout.readline() if ready else ""
-        except (BrokenPipeError, ValueError):
-            line = ""
-        if not line:
-            if req["op"] == "quit":         # already dead - nothing to quit
-                return {"ok": True}
-            if _retries <= 0:
-                raise RuntimeError(
-                    f"engine worker died or timed out on {req['op']!r} "
-                    f"(exit {self._p.poll()})")
-            self._spawn()                   # respawn and retry once
-            return self._call(req, _retries - 1)
-        res = json.loads(line)
-        if not res["ok"]:
-            raise RuntimeError(f"engine worker: {res['error']}")
-        return res
-
-    def decide(self, state, questions):
-        res = self._call({"op": "decide", "state": state,
-                          "questions": questions})
-        self.last_label_calls = res["label_calls"]
-        return res["result"]
-
-    def __getattr__(self, name):            # compute_units, max_seq, ...
-        try:
-            return self.__dict__["_info"][name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def close(self):
-        try:
-            self._call({"op": "quit"})
-        except Exception:
-            pass
-        try:
-            self._p.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self._p.kill()
+from coreml_worker import WorkerCoreMLEngine
 
 
 @pytest.fixture(scope="module")
 def engine():
     pytest.importorskip("coremltools")
-    e = _WorkerEngine(PKG_DIR, CKPT, "cpu_and_ne")
+    e = WorkerCoreMLEngine(PKG_DIR, CKPT, "cpu_and_ne")
     yield e
     e.close()
 
@@ -277,7 +196,7 @@ def test_package_metadata_only_load():
     stores the same value as a JSON string - both must parse.
     """
     from typed_schema import Question
-    e = _WorkerEngine(PKG_DIR, "-", "cpu_only")
+    e = WorkerCoreMLEngine(PKG_DIR, ckpt=None, compute_units="cpu_only")
     try:
         assert len(e.temperatures) == 3 and all(t > 0 for t in e.temperatures)
         assert e.max_len > 0 and e.max_seq >= 1024
