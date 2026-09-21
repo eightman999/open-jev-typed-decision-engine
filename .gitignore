@@ -41,5 +41,11 @@ artifacts/jev_competition_smoke.json
 # silver labels, review queue and summary JSONs stay committed
 artifacts/jev_llm_judge_raw*.jsonl
 
+# JudgeBench: dataset copy, per-call raw rows and disagreement rows embed
+# full case text (large); summary/failures JSONs stay committed
+artifacts/judgebench_620.jsonl
+artifacts/judgebench_raw.jsonl
+artifacts/judgebench_disagreements.jsonl
+
 # run artifacts are gitignored, but the committed copies under docs/ are not
 !docs/charts/*.png
