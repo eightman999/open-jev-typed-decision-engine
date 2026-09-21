@@ -233,8 +233,29 @@ def _pct(a, b):
     return a / b if b else None
 
 
+def _binary_forced(r):
+    """argmax over candidate_a/candidate_b probabilities only (uncertain
+    excluded) -> canonical winner. None when probabilities are absent."""
+    p = r.get("probabilities")
+    if not p:
+        return None
+    a, b = p.get("candidate_a", 0.0), p.get("candidate_b", 0.0)
+    if a == b == 0.0:
+        return None
+    disp = "candidate_a" if a > b else "candidate_b"
+    return canonical_winner(disp, r["swapped"])
+
+
 def system_stats(rows, pairs):
-    """Per-call and per-pair metrics for one system's rows."""
+    """Per-call and per-pair metrics for one system's rows.
+
+    Denominators:
+      overall_accuracy_abstain_wrong: all non-failure calls (uncertain = wrong)
+      coverage: decided calls / non-failure calls
+      accuracy_given_decision: correct decided / decided calls
+      binary_forced_argmax_accuracy: calls where A/B argmax over stored
+        probabilities is computable / calls with probabilities
+    """
     valid = [r for r in rows if r["verdict"] not in FAIL_TAG]
     decisive = [r for r in valid if r["verdict"] in
                 ("candidate_a", "candidate_b")]
@@ -277,7 +298,8 @@ def system_stats(rows, pairs):
         confb[key]["n"] += 1
         confb[key]["correct"] += bool(r["correct"])
     conf_buckets = {k: {"n": v["n"],
-                        "accuracy": _pct(v["correct"], v["n"])}
+                        "overall_accuracy_abstain_wrong":
+                            _pct(v["correct"], v["n"])}
                     for k, v in sorted(confb.items())}
 
     tb = {"<=512": [], "513-1024": [], ">1024": [], "truncated": []}
@@ -297,17 +319,30 @@ def system_stats(rows, pairs):
         return _pct(sum(r["correct"] for r in d), len(d)) \
             if d else None
 
-    trunc = {k: {"n": len(v), "forced_acc": acc(v) if v else None,
+    def oacc(sub):
+        return _pct(sum(r["correct"] for r in sub), len(sub)) \
+            if sub else None
+
+    trunc = {k: {"n": len(v),
+                 "overall_accuracy_abstain_wrong": oacc(v) if v else None,
+                 "accuracy_given_decision": acc(v) if v else None,
                  "coverage": _pct(
                      sum(1 for r in v if r["verdict"]
                          in ("candidate_a", "candidate_b")), len(v))}
              for k, v in tb.items()}
 
+    forced = [_binary_forced(r) for r in valid]
+    forced_n = [w for w in forced if w is not None]
+    forced_ok = sum(1 for r, w in zip(valid, forced)
+                    if w is not None and w == r["gold"])
+
     return {
         "n_calls": len(rows), "n_valid": len(valid),
-        "accuracy": _pct(len(correct), len(valid)),
+        "overall_accuracy_abstain_wrong": _pct(len(correct), len(valid)),
         "coverage": _pct(len(decisive), len(valid)),
-        "conditional_accuracy": _pct(len(correct), len(decisive)),
+        "accuracy_given_decision": _pct(len(correct), len(decisive)),
+        "binary_forced_argmax_accuracy": _pct(forced_ok, len(forced_n)),
+        "binary_forced_argmax_n": len(forced_n),
         "selective_risk": (1 - _pct(len(correct), len(decisive))
                            if decisive else None),
         "abstention_rate": _pct(
@@ -345,7 +380,7 @@ def analyze(rows, pairs, args):
             ssub = [r for r in sub if r["split"] == split]
             st.setdefault("per_split", {})[split] = {
                 "n_calls": len(ssub),
-                "accuracy": _pct(
+                "overall_accuracy_abstain_wrong": _pct(
                     sum(r["correct"] for r in ssub
                         if r["verdict"] in ("candidate_a", "candidate_b")),
                     len([r for r in ssub
@@ -360,7 +395,7 @@ def analyze(rows, pairs, args):
             src.setdefault(r.get("source") or "unknown", []).append(r)
         st["per_source"] = {
             k: {"n_calls": len(v),
-                "accuracy": _pct(
+                "overall_accuracy_abstain_wrong": _pct(
                     sum(r["correct"] for r in v
                         if r["verdict"] in ("candidate_a", "candidate_b")),
                     len([r for r in v if r["verdict"] not in FAIL_TAG])),
@@ -373,51 +408,108 @@ def analyze(rows, pairs, args):
             for k, v in sorted(src.items())}
         per_system[sname] = st
 
-    matrix = Counter()
+    matrices = {}
     disagreements = []
     if "jev" in per_system and any(s.startswith("jevlite")
                                  for s in per_system):
         jl = next(s for s in systems if s.startswith("jevlite"))
-        jr = {r["pair_id"]: r for r in rows
-              if r["system"] == "jev" and r["pass"] == 1}
-        lr = {r["pair_id"]: r for r in rows
-              if r["system"] == jl and r["pass"] == 1}
+        jr = {}
+        lr = {}
+        for r in rows:
+            if r["system"] == "jev":
+                jr.setdefault(r["pair_id"], {})[r["pass"]] = r
+            elif r["system"] == jl:
+                lr.setdefault(r["pair_id"], {})[r["pass"]] = r
+
+        def _single(jr_, lr_):
+            j_ok = (jr_["canonical"] in ("A", "B")
+                    and jr_["canonical"] == jr_["gold"])
+            l_ok = (lr_["canonical"] in ("A", "B")
+                    and lr_["canonical"] == lr_["gold"])
+            l_abs = lr_["canonical"] == "uncertain"
+            if j_ok and l_ok:
+                return "both_correct"
+            if j_ok and not l_ok and not l_abs:
+                return "jev_only"
+            if l_ok and not j_ok:
+                return "jevlite_only"
+            if l_abs and j_ok:
+                return "jl_abstain_jev_correct"
+            if l_abs and not j_ok:
+                return "jl_abstain_jev_wrong"
+            return "both_wrong"
+
+        def _pair_state(pr_):
+            """Collapse a system's two passes into a pair-level state:
+            correct | wrong | abstain | mixed."""
+            cans = [pr_[ps]["canonical"] for ps in (1, 2) if ps in pr_]
+            if not cans:
+                return "mixed"
+            if all(c == "uncertain" for c in cans):
+                return "abstain"
+            if any(c in (None,) or c not in ("A", "B", "uncertain")
+                   for c in cans):
+                return "mixed"
+            if all(c in ("A", "B") for c in cans):
+                oks = [pr_[ps]["canonical"] == pr_[ps]["gold"]
+                       for ps in (1, 2) if ps in pr_]
+                if all(oks):
+                    return "correct"
+                return "wrong" if not any(oks) else "mixed"
+            return "mixed"
+
+        mo, ms, mt, mt_detail = Counter(), Counter(), Counter(), Counter()
         for p in pairs:
             pid = p["pair_id"]
-            a, b = jr.get(pid), lr.get(pid)
-            if not a or not b:
-                continue
-            j_ok = a["canonical"] == a["gold"] \
-                and a["canonical"] in ("A", "B")
-            l_ok = b["canonical"] == b["gold"] \
-                and b["canonical"] in ("A", "B")
-            l_abs = b["canonical"] == "uncertain"
-            if j_ok and l_ok:
-                matrix["both_correct"] += 1
-            elif j_ok and not l_ok and not l_abs:
-                matrix["jev_only"] += 1
-            elif l_ok and not j_ok:
-                matrix["jevlite_only"] += 1
-            elif l_abs and j_ok:
-                matrix["jl_abstain_jev_correct"] += 1
-            elif l_abs and not j_ok:
-                matrix["jl_abstain_jev_wrong"] += 1
-            else:
-                matrix["both_wrong"] += 1
-            if matrix and (j_ok != l_ok or l_abs):
+            a1, b1 = jr.get(pid, {}).get(1), lr.get(pid, {}).get(1)
+            a2, b2 = jr.get(pid, {}).get(2), lr.get(pid, {}).get(2)
+            if a1 and b1:
+                mo[_single(a1, b1)] += 1
+            if a2 and b2:
+                ms[_single(a2, b2)] += 1
+            if pid in jr and pid in lr:
+                js, ls = _pair_state(jr[pid]), _pair_state(lr[pid])
+                mt_detail[f"jev={js}+jl={ls}"] += 1
+                if js == "correct" and ls == "correct":
+                    mt["both_correct"] += 1
+                elif js == "correct" and ls == "wrong":
+                    mt["jev_only"] += 1
+                elif ls == "correct" and js != "correct":
+                    mt["jevlite_only"] += 1
+                elif ls == "abstain" and js == "correct":
+                    mt["jl_abstain_jev_correct"] += 1
+                elif ls == "abstain" and js == "wrong":
+                    mt["jl_abstain_jev_wrong"] += 1
+                elif js == "wrong" and ls == "wrong":
+                    mt["both_wrong"] += 1
+                else:
+                    mt["mixed_or_inconsistent"] += 1
+            if a1 and b1 and (a1["canonical"] != b1["canonical"]
+                              or b1["canonical"] == "uncertain"):
                 disagreements.append({
                     "pair_id": pid, "source": p.get("source"),
                     "split": p["split"],
-                    "question": p["question"], "gold": p["label"],
-                    "jev": {"verdict": a["verdict"],
-                            "canonical": a["canonical"],
-                            "confidence": a["confidence"]},
-                    "jevlite": {"verdict": b["verdict"],
-                                "canonical": b["canonical"],
-                                "confidence": b["confidence"]}})
+                    "question": p.get("question"), "gold": p["label"],
+                    "jev": {f"pass{ps}": {"verdict": jr[pid][ps]["verdict"],
+                                          "canonical": jr[pid][ps]
+                                          ["canonical"],
+                                          "confidence": jr[pid][ps]
+                                          ["confidence"]}
+                            for ps in (1, 2) if ps in jr[pid]},
+                    "jevlite": {f"pass{ps}": {"verdict": lr[pid][ps]
+                                              ["verdict"],
+                                              "canonical": lr[pid][ps]
+                                              ["canonical"],
+                                              "confidence": lr[pid][ps]
+                                              ["confidence"]}
+                                for ps in (1, 2) if ps in lr[pid]}})
+        matrices = {"outcome_matrix_original": dict(mo),
+                    "outcome_matrix_swapped": dict(ms),
+                    "outcome_matrix_strict_pair": dict(mt),
+                    "outcome_matrix_strict_pair_detail": dict(mt_detail)}
 
     return {"n_pairs": len(pairs), "systems": per_system,
-            "outcome_matrix": dict(matrix)}, disagreements
+            **matrices}, disagreements
 
 
 def main():
@@ -504,11 +596,15 @@ def main():
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
     for sname, st in summary["systems"].items():
-        print(f"\n== {sname}: acc={st['accuracy']} "
-              f"cov={st['coverage']} cond={st['conditional_accuracy']} "
+        print(f"\n== {sname}: acc={st['overall_accuracy_abstain_wrong']} "
+              f"cov={st['coverage']} cond={st['accuracy_given_decision']} "
+              f"forced_ab={st['binary_forced_argmax_accuracy']} "
               f"strict={st['strict_pair_accuracy']} "
               f"swap={st['swap_consistency']} fails={st['failures']}")
-    print("outcome:", summary["outcome_matrix"])
+    for k in ("outcome_matrix_original", "outcome_matrix_swapped",
+              "outcome_matrix_strict_pair"):
+        if k in summary:
+            print(k + ":", summary[k])
     print("wrote", args.summary)
 
 
