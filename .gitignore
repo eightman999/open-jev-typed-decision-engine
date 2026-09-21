@@ -47,5 +47,10 @@ artifacts/judgebench_620.jsonl
 artifacts/judgebench_raw.jsonl
 artifacts/judgebench_disagreements.jsonl
 
+# posprior probe: synthetic rows are regenerable via --make-data (fixed seed);
+# the small metrics JSON stays committed
+artifacts/posprior_train.jsonl
+artifacts/posprior_eval.jsonl
+
 # run artifacts are gitignored, but the committed copies under docs/ are not
 !docs/charts/*.png
