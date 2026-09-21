@@ -54,6 +54,7 @@ SIZES = (2, 3, 4, 5, 6)
 N_TRAIN = 800
 N_EVAL_PER_SIZE = 120
 MAX_LEN = 256
+_SER = {"flat": "none", "sym": "lead", "pair": "pair"}
 
 
 def _rid(rng, n=5):
@@ -181,12 +182,15 @@ def load_rows(path):
         return [json.loads(l) for l in f if l.strip()]
 
 
-def _marker_rows_only(model):
-    """Freeze every encoder weight; leave only the two new marker-token
-    embedding rows trainable (they were never pretrained)."""
-    import torch
+def _freeze_all(model):
     for p in model.encoder.parameters():
         p.requires_grad_(False)
+
+
+def _marker_rows(model):
+    """Leave only the two new marker-token embedding rows trainable
+    (they were never pretrained)."""
+    import torch
     emb = model.encoder.get_input_embeddings().weight
     emb.requires_grad_(True)
     mask = torch.zeros_like(emb)
@@ -194,7 +198,19 @@ def _marker_rows_only(model):
     emb.register_hook(lambda g: g * mask)
 
 
-def train_a(epochs=3, bs=8, accum=1, lr=1e-3, enc_lr=3e-5, freeze=True):
+def _unfreeze_last(model, n):
+    """Freeze the encoder except its last n layers + final norm."""
+    _freeze_all(model)
+    for layer in model.encoder.layers[-n:]:
+        for p in layer.parameters():
+            p.requires_grad_(True)
+    for p in model.encoder.final_norm.parameters():
+        p.requires_grad_(True)
+    _marker_rows(model)
+
+
+def train_a(epochs=3, bs=8, accum=1, lr=1e-3, enc_lr=3e-5, mode="frozen",
+            unfreeze_last=4, ser="lead"):
     import torch
     from torch.utils.data import DataLoader
     from td_data import TypedDecisions, collate
@@ -204,26 +220,32 @@ def train_a(epochs=3, bs=8, accum=1, lr=1e-3, enc_lr=3e-5, freeze=True):
     torch.manual_seed(SEED)
     dev = pick_device()
     model = JevLite(DEFAULT_ENCODER).to(dev)
-    if freeze:
-        _marker_rows_only(model)
+    if mode == "frozen":
+        _freeze_all(model)
+        _marker_rows(model)
+    elif mode == "partial":
+        _unfreeze_last(model, unfreeze_last)
     groups = ([{"params": [p for n, p in model.named_parameters()
                            if n.startswith("score.")], "lr": lr},
                {"params": [p for n, p in model.named_parameters()
                            if not n.startswith("score.") and p.requires_grad],
                 "lr": enc_lr}]
-              if not freeze else
+              if mode != "frozen" else
               [{"params": [p for p in model.parameters() if p.requires_grad],
                 "lr": lr}])
     rows = load_rows(TRAIN_F)
-    ds = TypedDecisions(rows, model.tok, MAX_LEN, model.qid, model.lid)
+    ds = TypedDecisions(rows, model.tok, MAX_LEN, model.qid, model.lid,
+                        permute=True, slots=ser)
     dl = DataLoader(ds, batch_size=bs, shuffle=True,
                     collate_fn=lambda b: collate(b, model.tok.pad_token_id))
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(groups, weight_decay=0.01)
-    print(f"A({'frozen' if freeze else 'full'}): device={dev} "
+    print(f"A({mode}{unfreeze_last if mode == 'partial' else ''}"
+          f",{ser}): device={dev} "
           f"trainable_params={sum(p.numel() for p in params)} "
           f"| rows={len(rows)} | eff. batch {bs * accum}")
     for ep in range(epochs):
+        ds.resample(SEED + ep)          # fresh label permutation per epoch
         model.train()
         run, t0 = 0.0, time.time()
         for i, b in enumerate(dl):
@@ -236,19 +258,21 @@ def train_a(epochs=3, bs=8, accum=1, lr=1e-3, enc_lr=3e-5, freeze=True):
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 opt.step()
                 opt.zero_grad(set_to_none=True)
-        acc = probe_accuracy(model, dev)
+        acc = probe_accuracy(model, dev, ser=ser)
         print(f"  epoch {ep + 1}/{epochs} loss {run / len(dl):.4f} "
               f"eval-subset acc {acc:.3f} {time.time() - t0:.0f}s",
               flush=True)
-    out = CKPT_A if freeze else CKPT_A.replace(".pt", "_full.pt")
+    tag = {"frozen": "frozen", "partial": f"partial{unfreeze_last}",
+           "full": "full"}[mode]
+    out = f"{ART}/posprior_{tag}_{ser}.pt"
     torch.save({"state_dict": model.state_dict(), "encoder": DEFAULT_ENCODER,
                 "max_len": MAX_LEN, "temperatures": [1.0, 1.0, 1.0],
-                "probe": f"{'frozen' if freeze else 'full'}-encoder "
-                         "synthetic choice"}, out)
+                "probe": f"{mode}-encoder synthetic choice "
+                         f"({ser} serialization)"}, out)
     print(f"wrote {out}")
 
 
-def probe_accuracy(model, dev, n=100):
+def probe_accuracy(model, dev, n=100, ser="lead"):
     """Quick accuracy check on a fixed eval subset sampled across sizes."""
     import torch
     import td_data
@@ -258,7 +282,7 @@ def probe_accuracy(model, dev, n=100):
     hit = 0
     for r in rows:
         enc = td_data.encode(r, model.tok, MAX_LEN, model.qid, model.lid,
-                             with_gold=False)
+                             with_gold=False, slots=ser)
         b = td_data.collate([enc], model.tok.pad_token_id)
         b = {k: v.to(dev) for k, v in b.items()}
         with torch.no_grad():
@@ -283,11 +307,13 @@ def _load_any(path, dev):
     return m, ck
 
 
-def eval_model(path):
+def eval_model(path, ser="lead", eval_n=0):
     """Per-size position stats + permutation consistency for one checkpoint.
 
     path == "UNTRAINED" evaluates a freshly initialized JevLite
-    (base encoder + random head, no training at all)."""
+    (base encoder + random head, no training at all).
+    ser selects the label slot serialization (none/lead/pair);
+    "none" is the original flat layout the checkpoint was trained on."""
     import torch
     import td_data
     from device import pick_device
@@ -300,6 +326,9 @@ def eval_model(path):
     else:
         m, _ = _load_any(path, dev)
     rows = load_rows(EVAL_F)
+    if eval_n:  # quick scan: first eval_n rows of each size
+        rows = [r for k in SIZES
+                for r in [x for x in rows if x["k"] == k][:eval_n]]
     per_size = defaultdict(lambda: {
         "n": 0, "correct": 0, "wins": Counter(),
         "prob_by_pos": defaultdict(list), "logit_by_pos": defaultdict(list),
@@ -310,7 +339,7 @@ def eval_model(path):
 
     for r in rows:
         enc = td_data.encode(r, m.tok, MAX_LEN, m.qid, m.lid,
-                             with_gold=False)
+                             with_gold=False, slots=ser)
         b = td_data.collate([enc], m.tok.pad_token_id)
         b = {k: v.to(dev) for k, v in b.items()}
         with torch.no_grad():
@@ -337,7 +366,8 @@ def eval_model(path):
         (rot_pick if r.get("rot_of") else base_pick)[
             r.get("rot_of") or r["id"]] = key
 
-    out = {"checkpoint": path, "per_size": {}}
+    out = {"checkpoint": path,
+           "serialization": ser, "per_size": {}}
     for k, s in sorted(per_size.items()):
         out["per_size"][str(k)] = {
             "n": s["n"],
@@ -366,28 +396,52 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--make-data", action="store_true")
     ap.add_argument("--train-a", action="store_true")
+    ap.add_argument("--mode", choices=["frozen", "partial", "full"],
+                    default="frozen",
+                    help="encoder trainability for --train-a")
+    ap.add_argument("--unfreeze-last", type=int, default=4,
+                    help="encoder layers to unfreeze in --mode partial")
+    ap.add_argument("--ser", choices=["flat", "sym", "pair"],
+                    default="sym",
+                    help="label slots: flat=none, sym=lead, pair=dummy per label")
     ap.add_argument("--unfreeze", action="store_true",
-                    help="fallback: train the full encoder too (enc 3e-5)")
+                    help="deprecated alias for --mode full")
     ap.add_argument("--enc-lr", type=float, default=3e-5)
     ap.add_argument("--head-lr", type=float, default=1e-3)
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--accum", type=int, default=1)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--eval", default=None, help="checkpoint path")
+    ap.add_argument("--lead", default=None,
+                    help="override td_data.LEAD_SLOT_TEXT for probing variants")
+    ap.add_argument("--eval-n", type=int, default=0,
+                    help="subsample each size bucket to N rows (quick scans)")
     a = ap.parse_args()
+    if a.unfreeze:
+        a.mode = "full"
+    if a.lead is not None:
+        import td_data
+        td_data.LEAD_SLOT_TEXT = a.lead
 
     os.makedirs(ART, exist_ok=True)
     if a.make_data:
         make_data()
     if a.train_a:
-        train_a(epochs=a.epochs, freeze=not a.unfreeze,
-                enc_lr=a.enc_lr, lr=a.head_lr, bs=a.bs, accum=a.accum)
+        train_a(epochs=a.epochs, mode=a.mode, unfreeze_last=a.unfreeze_last,
+                enc_lr=a.enc_lr, lr=a.head_lr, bs=a.bs, accum=a.accum,
+                ser=_SER[a.ser])
     if a.eval:
-        res = eval_model(a.eval)
+        res = eval_model(a.eval, ser=_SER[a.ser], eval_n=a.eval_n)
         prev = {}
         if os.path.exists(METRICS_F):
             prev = json.load(open(METRICS_F))
-        prev[os.path.basename(a.eval)] = res
+        key = os.path.basename(a.eval) if a.ser == "flat" \
+            else f"{os.path.basename(a.eval)}@{a.ser}"
+        if a.lead is not None:
+            key += f"|lead={a.lead[:20]}"
+        if a.eval_n:
+            key += f"|n={a.eval_n}"
+        prev[key] = res
         prev["meta"] = {"seed": SEED, "n_train": N_TRAIN,
                         "n_eval_per_size": N_EVAL_PER_SIZE,
                         "sizes": list(SIZES), "max_len": MAX_LEN,

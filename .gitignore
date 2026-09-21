@@ -45,6 +45,7 @@ artifacts/jev_llm_judge_raw*.jsonl
 # full case text (large); summary/failures JSONs stay committed
 artifacts/judgebench_620.jsonl
 artifacts/judgebench_raw.jsonl
+artifacts/judgebench_raw_sym.jsonl
 artifacts/judgebench_disagreements.jsonl
 
 # posprior probe: synthetic rows are regenerable via --make-data (fixed seed);

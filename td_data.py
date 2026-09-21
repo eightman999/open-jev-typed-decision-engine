@@ -7,6 +7,7 @@ becomes that label's logit.
 from __future__ import annotations
 import hashlib
 import json
+import random
 import torch
 from torch.utils.data import Dataset
 from typed_schema import iter_labels, state_to_text, label_text, TYPE_ID
@@ -14,6 +15,14 @@ from typed_schema import iter_labels, state_to_text, label_text, TYPE_ID
 DATASET = "LocalLLaMA/typed-decisions"
 Q_TOKEN, L_TOKEN = "<<q>>", "<<l>>"
 MAX_Q = 8
+
+# slots inserts fixed, never-gathered `<<l>>` blocks so gathered markers stop
+# seeing position-dependent left context (BASE_MODEL_POSITION_AUDIT.md):
+#   "lead" - one dummy block before each question's first real label
+#   "pair" - one dummy block before EVERY label: each gathered marker has the
+#            identical `<<l>> SLOT_TEXT` predecessor
+#   "none" - original flat layout (first marker follows instruction text)
+LEAD_SLOT_TEXT = "-: options"
 
 
 def _parse(r):
@@ -81,22 +90,44 @@ def add_markers(tok):
     return n, tok.convert_tokens_to_ids(Q_TOKEN), tok.convert_tokens_to_ids(L_TOKEN)
 
 
-def encode(row, tok, max_len, qid, lid, with_gold=True):
-    """-> dict of python lists. Labels are laid out question by question."""
+def encode(row, tok, max_len, qid, lid, with_gold=True, slots="lead",
+           rng=None):
+    """-> dict of python lists. Labels are laid out question by question.
+
+    slots: "lead" emits a fixed lead `<<l>>` slot ahead of each question's
+    labels; "pair" emits one before EVERY label; "none" is the original flat
+    layout. Dummy slots are never gathered into label_pos.
+    rng: when given, shuffle each question's label emission order (all types
+    except `score`, whose order is semantic). Gold follows by label name, so
+    this is safe augmentation for training only - pass None at inference."""
+    if slots not in ("none", "lead", "pair"):
+        raise ValueError(f"slots={slots!r} - use 'none', 'lead' or 'pair'")
     qnames = sorted(row["questions"])[:MAX_Q]
 
-    tail, label_pos, group, target, qtypes = [], [], [], [], []
+    slot = [lid] + tok.encode(LEAD_SLOT_TEXT, add_special_tokens=False)
+    tail, label_pos, group, target, qtypes, labels = [], [], [], [], [], []
     for gi, qname in enumerate(qnames):
         q = row["questions"][qname]
         qtypes.append(TYPE_ID[q["type"]])
         tail += [qid] + tok.encode(q["instructions"], add_special_tokens=False)
         gold = row.get("gold", {}).get(qname, {}) if with_gold else {}
         probs = gold.get("probabilities", {})
-        for lab, desc in iter_labels(q):
+        labs = iter_labels(q)
+        if rng is not None and q["type"] != "score":
+            labs = list(labs)
+            rng.shuffle(labs)
+        labels.append([lab for lab, _ in labs])
+        if slots == "lead":
+            tail += slot
+        for lab, desc in labs:
+            if slots == "pair":
+                tail += slot
             label_pos.append(len(tail))            # index of the <<l>> marker
             group.append(gi)
             target.append(float(probs.get(lab, 0.0)))
             tail += [lid] + tok.encode(label_text(lab, desc), add_special_tokens=False)
+        if slots == "pair":
+            tail += slot          # trailing dummy: uniform right neighbour too
 
     # The questions are the part we must never truncate; the state absorbs the cut.
     budget = max_len - len(tail) - 2
@@ -117,14 +148,26 @@ def encode(row, tok, max_len, qid, lid, with_gold=True):
         # .get chain: rows built for inference carry no gold at all, and
         # predict_distributions used to die on them with a bare KeyError.
         "gold_label": [row.get("gold", {}).get(q, {}).get("label") for q in qnames],
-        "labels": [[l for l, _ in iter_labels(row["questions"][q])] for q in qnames],
+        "labels": labels,
     }
 
 
 class TypedDecisions(Dataset):
-    def __init__(self, rows, tok, max_len, qid, lid):
-        self.enc = [encode(r, tok, max_len, qid, lid) for r in rows]
-        self.rows = rows
+    def __init__(self, rows, tok, max_len, qid, lid, permute=False,
+                 slots="lead"):
+        self.rows, self.tok, self.max_len = rows, tok, max_len
+        self.qid, self.lid = qid, lid
+        self.permute, self.slots = permute, slots
+        self.resample(0)
+
+    def resample(self, seed):
+        """Re-encode every row. With permute=True each call draws a fresh
+        label order per question (training augmentation; gold follows by
+        name, so only the sequence position moves)."""
+        rng = random.Random(seed) if self.permute else None
+        self.enc = [encode(r, self.tok, self.max_len, self.qid, self.lid,
+                           rng=rng, slots=self.slots)
+                    for r in self.rows]
 
     def __len__(self):
         return len(self.enc)
