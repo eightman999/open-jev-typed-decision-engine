@@ -40,9 +40,10 @@ def _coreml_impl(pkg_dir, ckpt, compute_units, coreml_mode, **worker_kwargs):
 
 class _TorchEngine:
     """Thin wrapper over the reference implementation - do not reimplement it."""
-    def __init__(self, ckpt, device):
+    def __init__(self, ckpt, device, slots=None):
         self._serve = _serve_module()
-        self.info = self._serve.load(ckpt, device)
+        self.info = self._serve.load(ckpt, device, slots=slots)
+        self.slots = self.info.get("slots", "lead")
 
     def decide(self, state, questions, calibrated=True):
         return self._serve.decide(state, questions, calibrated)
@@ -51,10 +52,10 @@ class _TorchEngine:
 class DecisionEngine:
     def __init__(self, backend="torch", ckpt="jevlite.pt", device=None,
                  compute_units="cpu_and_ne", pkg_dir="artifacts/coreml",
-                 coreml_mode="worker", **worker_kwargs):
+                 coreml_mode="worker", slots=None, **worker_kwargs):
         self.backend = backend
         if backend == "torch":
-            self._impl = _TorchEngine(ckpt, device)
+            self._impl = _TorchEngine(ckpt, device, slots)
             self.dev = self._impl.info["dev"]
         elif backend == "coreml":
             self._impl, suffix = _coreml_impl(

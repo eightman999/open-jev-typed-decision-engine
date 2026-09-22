@@ -46,7 +46,10 @@ artifacts/jev_llm_judge_raw*.jsonl
 artifacts/judgebench_620.jsonl
 artifacts/judgebench_raw.jsonl
 artifacts/judgebench_raw_sym.jsonl
+artifacts/judgebench_raw_diag*.jsonl
 artifacts/judgebench_disagreements.jsonl
+artifacts/judgebench_disagreements_diag*.jsonl
+artifacts/judgebench_failures_diag*.jsonl
 
 # posprior probe: synthetic rows are regenerable via --make-data (fixed seed);
 # the small metrics JSON stays committed

@@ -96,7 +96,8 @@ if __name__ == "__main__":
     model.to(dev).eval()
 
     test = load_split("test", a.config, limit=a.limit)
-    ds = TypedDecisions(test, model.tok, ck["max_len"], model.qid, model.lid)
+    ds = TypedDecisions(test, model.tok, ck["max_len"], model.qid, model.lid,
+                        slots=ck.get("slots", "lead"))
     dl = DataLoader(ds, batch_size=a.bs,
                     collate_fn=lambda b: collate(b, model.tok.pad_token_id))
 

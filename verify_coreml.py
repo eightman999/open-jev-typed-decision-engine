@@ -64,7 +64,8 @@ def main():
     # The reference always encodes at the checkpoint's own max_len; rows whose
     # encoding no installed bucket can hold are skipped (reported, not hidden).
     rows = load_split(a.split, limit=a.limit)
-    ds = TypedDecisions(rows, model.tok, ck["max_len"], model.qid, model.lid)
+    ds = TypedDecisions(rows, model.tok, ck["max_len"], model.qid, model.lid,
+                        slots=ck.get("slots", "lead"))
 
     # --- reference passes on the identical encoded inputs --------------------
     t0 = time.time()

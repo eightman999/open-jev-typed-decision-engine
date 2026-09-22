@@ -236,7 +236,7 @@ def make_engine(backend, args):
                      "(coreml:<unit> | torch:<device> | live-jev)")
 
 
-def make_stats_encoder(encoder_name, encode_len):
+def make_stats_encoder(encoder_name, encode_len, slots="lead"):
     """Parent-side tokenizer for per-item token/truncation stats.
 
     Only used for measurement; inference encoding happens inside the engine.
@@ -250,11 +250,13 @@ def make_stats_encoder(encoder_name, encode_len):
     def measure(state, questions):
         row = {"id": "bench", "state": state, "questions": questions,
                "gold": {}}
-        enc = encode(row, tok, encode_len, qid, lid, with_gold=False)
+        enc = encode(row, tok, encode_len, qid, lid, with_gold=False,
+                     slots=slots)
         n = len(enc["input_ids"])
         truncated = False
         if n >= encode_len:
-            full = encode(row, tok, 1 << 22, qid, lid, with_gold=False)
+            full = encode(row, tok, 1 << 22, qid, lid, with_gold=False,
+                          slots=slots)
             truncated = len(full["input_ids"]) > n
         return n, truncated
 

@@ -98,6 +98,7 @@ def worker_main(argv) -> int:
                        "max_seq": eng.max_seq, "max_len": eng.max_len,
                        "encode_len": eng.encode_len,
                        "temperatures": eng.temperatures,
+                       "slots": eng.slots,
                        "buckets": sorted(eng._models)}
             elif req["op"] == "ping":
                 res = {"pong": True}
@@ -177,6 +178,7 @@ class WorkerCoreMLEngine:
         self.max_len = info["max_len"]
         self.encode_len = info["encode_len"]
         self.temperatures = info["temperatures"]
+        self.slots = info.get("slots", "lead")
         self.buckets = info["buckets"]
 
     # -- process management -------------------------------------------------

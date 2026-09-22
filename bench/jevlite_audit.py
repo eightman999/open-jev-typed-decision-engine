@@ -122,7 +122,8 @@ def torch_logits(state, questions, eng):
     m = eng["model"]
     row = {"id": "live", "state": state, "questions": questions, "gold": {}}
     enc = td_data.encode(row, m.tok, eng["max_len"], m.qid, m.lid,
-                         with_gold=False)
+                         with_gold=False,
+                         slots=eng.get("slots", "lead"))
     b = td_data.collate([enc], m.tok.pad_token_id)
     b = {k: v.to(eng["dev"]) for k, v in b.items()}
     with torch.no_grad():

@@ -178,6 +178,7 @@ def run_system(pairs, args, backend):
                 v, conf, probs = call_jev(state, jb_questions(),
                                           args.timeout)
             elif args.system.startswith("jevlite"):
+                rec["ckpt"] = backend.get("ckpt")
                 full_n, _ = backend["measure"](state, jb_questions())
                 rec["input_tokens"] = full_n
                 rec["truncated"] = full_n > backend["cap"]
@@ -533,11 +534,27 @@ def main():
     p.add_argument("--timeout", type=float, default=180.0)
     p.add_argument("--concurrency", type=int, default=1)
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--ckpt", default="jevlite.pt",
+                   help="checkpoint for jevlite-* systems")
+    p.add_argument("--slots", default=None,
+                   choices=["none", "lead", "pair"],
+                   help="override the checkpoint's label serialization; "
+                        "default: whatever the checkpoint was trained with "
+                        "(ck['slots'], falling back to 'lead')")
+    p.add_argument("--subset-seed", type=int, default=None,
+                   help="when set, the --limit subset is a seeded random "
+                        "sample of pairs instead of the first N")
     p.add_argument("--analyze-only", action="store_true")
     args = p.parse_args()
 
     pairs = list(iter_jsonl(args.data))
-    if args.limit:
+    subset_method = "head"
+    if args.subset_seed is not None:
+        import random
+        pairs = random.Random(args.subset_seed).sample(
+            pairs, args.limit or len(pairs))
+        subset_method = f"seeded-sample(seed={args.subset_seed})"
+    elif args.limit:
         pairs = pairs[:args.limit]
 
     backend = {}
@@ -552,15 +569,19 @@ def main():
                 kwargs["device"] = "mps"
             from engine import DecisionEngine
             backend["engine"] = DecisionEngine(backend=backend_name,
-                                               **kwargs)
+                                               ckpt=args.ckpt,
+                                               slots=args.slots, **kwargs)
+            backend["ckpt"] = args.ckpt
             # token + truncation stats on the same encoding path
             import torch
             from benchmark_jev_competition import make_stats_encoder
-            ck = torch.load("jevlite.pt", map_location="cpu",
+            ck = torch.load(args.ckpt, map_location="cpu",
                             weights_only=False)
+            backend["slots"] = args.slots or ck.get("slots", "lead")
             backend["cap"] = getattr(backend["engine"]._impl,
                                      "encode_len", ck.get("max_len", 1024))
-            backend["measure"] = make_stats_encoder(ck["encoder"], 1 << 22)
+            backend["measure"] = make_stats_encoder(
+                ck["encoder"], 1 << 22, slots=backend["slots"])
         else:
             if not args.endpoint or not args.model:
                 p.error("control judge needs --endpoint and --model")
@@ -571,10 +592,20 @@ def main():
 
     rows = list(iter_jsonl(args.out)) if os.path.exists(args.out) else []
     summary, disagreements = analyze(rows, pairs, args)
+    pair_ids = [p["pair_id"] for p in pairs]
     summary["meta"] = {
         "dataset": "ScalerLab/JudgeBench",
         "dataset_sha256": sha256_file(args.data),
         "pairs": len(pairs),
+        "subset": {
+            "method": subset_method,
+            "seed": args.subset_seed,
+            "n": len(pairs),
+            "pair_ids": pair_ids,
+            "sha256": hashlib.sha256(
+                "\n".join(pair_ids).encode()).hexdigest()},
+        "ckpt": args.ckpt if args.system.startswith("jevlite") else None,
+        "slots": backend.get("slots") or args.slots,
         "git_commit": subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True).stdout.strip(),

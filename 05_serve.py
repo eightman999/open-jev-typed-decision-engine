@@ -21,7 +21,7 @@ _engine = {}
 
 def load(ckpt="jevlite.pt", device=None, backend="torch",
          compute_units="cpu_and_ne", pkg_dir="artifacts/coreml",
-         coreml_mode="worker"):
+         coreml_mode="worker", slots=None):
     if backend == "coreml":
         # "worker" (default) keeps the ANE runtime in a subprocess - the heap
         # corruption in ANE_REPORT.md cannot take down this process.
@@ -29,15 +29,20 @@ def load(ckpt="jevlite.pt", device=None, backend="torch",
         from engine import _coreml_impl
         eng, suffix = _coreml_impl(pkg_dir, ckpt, compute_units, coreml_mode)
         _engine.update(model=eng, dev=f"coreml:{compute_units}{suffix}",
-                       max_len=eng.encode_len, temps=eng.temperatures)
+                       max_len=eng.encode_len, temps=eng.temperatures,
+                       slots=eng.slots)
         return _engine
     ck = require_ckpt(ckpt)
     dev = device or pick_device()
     m = JevLite(ck["encoder"])
     m.load_state_dict(ck["state_dict"])
     m.to(dev).eval()
+    # A checkpoint trained under one serialization must be served under the
+    # same one; checkpoints older than the slots field get the current
+    # default ("lead"), which is the pos0 fix.
     _engine.update(model=m, dev=dev, max_len=ck["max_len"],
-                   temps=ck.get("temperatures"))
+                   temps=ck.get("temperatures"),
+                   slots=slots or ck.get("slots", "lead"))
     return _engine
 
 
@@ -50,7 +55,8 @@ def decide(state, questions, calibrated=True):
         # CoreMLEngine owns its own encode/pad/predict path
         return m.decide(state, questions, calibrated)
     row = {"id": "live", "state": state, "questions": questions, "gold": {}}
-    enc = encode(row, m.tok, e["max_len"], m.qid, m.lid, with_gold=False)
+    enc = encode(row, m.tok, e["max_len"], m.qid, m.lid, with_gold=False,
+                 slots=e.get("slots", "lead"))
     b = collate([enc], m.tok.pad_token_id)
     b = {k: v.to(e["dev"]) for k, v in b.items()}
     _, probs = m(b, apply_temperature=calibrated)

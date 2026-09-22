@@ -142,7 +142,8 @@ if __name__ == "__main__":
     model.to(dev).eval()
 
     _, va = val_split(load_split("train", a.config, limit=a.limit))
-    ds = TypedDecisions(va, model.tok, ck["max_len"], model.qid, model.lid)
+    ds = TypedDecisions(va, model.tok, ck["max_len"], model.qid, model.lid,
+                        slots=ck.get("slots", "lead"))
     dl = DataLoader(ds, batch_size=a.bs,
                     collate_fn=lambda b: collate(b, model.tok.pad_token_id))
     cached = collect(model, dl, dev)

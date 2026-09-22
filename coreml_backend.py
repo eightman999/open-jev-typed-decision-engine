@@ -122,6 +122,9 @@ class CoreMLEngine:
         temps = (ck.get("temperatures") or _temps(meta.get("temperatures"))
                  or _temps(first.user_defined_metadata.get("temperatures")))
         self.temperatures = list(temps) if temps else [1.0, 1.0, 1.0]
+        # Label serialization the checkpoint was trained under; pre-slots
+        # checkpoints get the current default ("lead" - the pos0 fix).
+        self.slots = ck.get("slots") or meta.get("slots") or "lead"
 
         self.tok = AutoTokenizer.from_pretrained(self.encoder_name)
         _, self.qid, self.lid = add_markers(self.tok)
@@ -181,7 +184,7 @@ class CoreMLEngine:
 
         row = {"id": "live", "state": state, "questions": questions, "gold": {}}
         enc = encode(row, self.tok, self.encode_len, self.qid, self.lid,
-                     with_gold=False)
+                     with_gold=False, slots=self.slots)
         return self.decide_enc(enc, calibrated)
 
     def decide_enc(self, enc, calibrated=True):
