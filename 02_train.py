@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from transformers import (get_cosine_schedule_with_warmup,
                           get_linear_schedule_with_warmup)
 from td_data import load_split, TypedDecisions, collate, val_split
+from device import pick_device
 from model import JevLite, decision_loss, argmax_per_question, DEFAULT_ENCODER
 
 
@@ -57,21 +58,41 @@ if __name__ == "__main__":
                         "of all four - a domain specialist is where a small model wins")
     p.add_argument("--limit", type=int, default=None,
                    help="tiny run to verify the loop before spending GPU time")
+    p.add_argument("--slots", default="lead", choices=["none", "lead", "pair"],
+                   help="label serialization: 'none' is the original flat "
+                        "layout that suppresses position 0 at init; 'lead' "
+                        "(default) gives each question's first marker a "
+                        "label-shaped left neighbour; 'pair' puts a dummy "
+                        "before every label (SERIALIZATION_FIX.md)")
+    p.add_argument("--permute", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="shuffle each question's label order per epoch "
+                        "(score order is semantic and never moves). Gold "
+                        "follows by label name. Use --no-permute to reproduce "
+                        "the pre-fix training regime")
+    p.add_argument("--seed", type=int, default=0,
+                   help="torch init/shuffle seed; epoch ep permutes with "
+                        "seed+ep, so runs sharing a seed see identical data "
+                        "order and identical permutations")
     a = p.parse_args()
 
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.manual_seed(a.seed)
+    dev = pick_device()
     model = JevLite(a.encoder).to(dev)
     tok = model.tok
     tr_rows, va_rows = val_split(load_split("train", a.config, limit=a.limit))
-
-    def mk(rows):
-        return TypedDecisions(rows, tok, a.max_len, model.qid, model.lid)
+    # Train permutes; validation never does - a moving label order would make
+    # epoch-to-epoch val accuracy non-comparable.
+    tr_ds = TypedDecisions(tr_rows, tok, a.max_len, model.qid, model.lid,
+                           permute=a.permute, slots=a.slots)
+    va_ds = TypedDecisions(va_rows, tok, a.max_len, model.qid, model.lid,
+                           slots=a.slots)
 
     def coll(b):
         return collate(b, tok.pad_token_id)
 
-    tl = DataLoader(mk(tr_rows), batch_size=a.bs, shuffle=True, collate_fn=coll)
-    vl = DataLoader(mk(va_rows), batch_size=a.bs, collate_fn=coll)
+    tl = DataLoader(tr_ds, batch_size=a.bs, shuffle=True, collate_fn=coll)
+    vl = DataLoader(va_ds, batch_size=a.bs, collate_fn=coll)
     print(f"device {dev} | train {len(tr_rows)} | val {len(va_rows)} "
           f"| effective batch {a.bs * a.accum}")
 
@@ -92,7 +113,8 @@ if __name__ == "__main__":
     # alive rather than wedged.
     every = max(1, len(tl) // 10)
     for ep in range(a.epochs):
-        model.train()
+        tr_ds.resample(a.seed + ep)   # fresh label order per epoch (no-op
+        model.train()               # permutation when --no-permute)
         run = 0.0
         t_ep = time.time()
         for i, b in enumerate(tl):
@@ -125,7 +147,9 @@ if __name__ == "__main__":
         if acc > best:
             stale, best = 0, acc
             torch.save({"state_dict": model.state_dict(), "encoder": a.encoder,
-                        "max_len": a.max_len, "val_acc": acc}, a.out)
+                        "max_len": a.max_len, "val_acc": acc,
+                        "slots": a.slots, "permute": a.permute,
+                        "seed": a.seed}, a.out)
         else:
             stale += 1
             if a.patience and stale >= a.patience:

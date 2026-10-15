@@ -10,6 +10,8 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-2a78d6?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Colab](https://img.shields.io/badge/train%20on-free%20T4-eb6834?style=for-the-badge&logo=googlecolab&logoColor=white)](jevlite_colab.ipynb)
 [![Benchmark](https://img.shields.io/badge/benchmark-typed--decisions-1baf7a?style=for-the-badge)](https://huggingface.co/datasets/LocalLLaMA/typed-decisions)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20weights-j--llm%2Fjevlite-ffcc4d?style=for-the-badge)](https://huggingface.co/j-llm/jevlite)
+[![Core ML](https://img.shields.io/badge/Core%20ML-Apple%20Neural%20Engine-000000?style=for-the-badge&logo=apple&logoColor=white)](https://huggingface.co/j-llm/jevlite)
 
 [Results](#results) · [How it works](#how-it-works) · [Quick start](#quick-start) · [What we learned](#what-the-runs-actually-proved) · [Limitations](#limitations)
 
@@ -159,6 +161,71 @@ python 06_export_onnx.py --quantize
 
 Every script takes `--limit N` for a fast dry run, and `--config <workflow>` to train a single-domain specialist.
 
+### Apple Silicon: Core ML / Neural Engine
+
+The encoder + score head run on the Neural Engine as a fixed-shape Core ML
+program; the dynamic-schema bookkeeping (label-position gather, per-question
+softmax, temperature) stays on CPU, so adding questions still costs nothing.
+
+**Pre-built packages:** [`j-llm/jevlite`](https://huggingface.co/j-llm/jevlite) on
+Hugging Face has the fp16 (Neural Engine) and fp32 `.mlpackage` buckets plus the
+trained weights (`jevlite.pt`, `model.safetensors`), so you can skip training and export:
+
+```bash
+hf download j-llm/jevlite --local-dir hf-jevlite
+python decide.py --backend coreml --pkg-dir hf-jevlite/coreml --ckpt hf-jevlite/jevlite.pt
+```
+
+To build them yourself instead:
+
+```bash
+# one-time: export fp16 ML Programs for the sequence buckets
+python export_coreml.py --ckpt jevlite.pt --seq-lens 256 512 1024 \
+    --min-macos 26            # fp16 @ macOS15 targets is broken - see ANE_REPORT
+
+python 05_serve.py --demo --backend coreml --compute-units cpu_and_ne
+python decide.py --backend coreml --compute-units cpu_and_ne
+python verify_coreml.py --ckpt jevlite.pt --limit 50    # parity report
+python benchmark_coreml.py --ckpt jevlite.pt            # latency report
+```
+
+Measured on M2 Max / macOS 26 (`BENCHMARK.md`, `ANE_REPORT.md`):
+
+- `cpu_and_ne` (GPU off) is **1.5–2.5× faster than Core ML CPU** and
+  **2.3–5.4× faster than PyTorch-CPU**; it ties PyTorch-MPS at seq 256 and
+  loses to it at 512/1024. `all` adds nothing — do not read it as ANE speed.
+- Full test split parity: **0.9965 decision agreement, zero accuracy
+  regression** (0.6445 vs 0.6430), confidence MAE 0.0024.
+- `fp32` export is bit-exact but cannot use the ANE — it is the parity
+  fallback.
+
+```python
+from engine import DecisionEngine
+engine = DecisionEngine(backend="coreml", compute_units="cpu_and_ne")
+engine.decide(state, questions)   # same {"label", "confidence", ...} shape
+```
+
+Production note: `backend="coreml"` runs inside `coreml_worker.py` — a
+supervised subprocess (respawn once on crash/timeout, periodic recycle) —
+because the ANE runtime can corrupt the host heap when bridged predict
+outputs are deallocated (details in `ANE_REPORT.md`). `--coreml-mode
+inprocess` exists for debugging only; `05_serve.py --serve` never runs ANE
+in the FastAPI process by default.
+
+Benchmark vs the real novllm judging workload (cached historical Jev
+verdicts, zero API cost):
+
+```bash
+python benchmark_jev_competition.py \
+    --input /path/to/queue_*.resplit.jsonl \
+    --jev-results /path/to/verdicts_*.resplit.jev.jsonl \
+    --backend coreml:cpu_and_ne --out artifacts/jev_competition.json
+```
+
+See `JEV_COMPETITION.md` for the paired-agreement, routing, and latency
+results. Historical Jev agreement is **not** accuracy — Jev is a reference
+system, not ground truth.
+
 ### Files
 
 | | |
@@ -171,6 +238,12 @@ Every script takes `--limit N` for a fast dry run, and `--config <workflow>` to 
 | `plots.py` | six charts, rendered from the JSON each step writes |
 | `01_…` → `07_…` | the pipeline |
 | `smoke_test.py` | correctness checks, no GPU needed |
+| `engine.py` | `DecisionEngine(backend=...)` — one `decide()`, swappable backend |
+| `export_coreml.py` | Core ML export; patches the ops coremltools 9 lacks |
+| `coreml_backend.py` | ANE engine: bucket select, pad, predict, CPU-side decide |
+| `coreml_worker.py` | subprocess isolation for the Core ML engine (production default) |
+| `benchmark_jev_competition.py` | Jev-vs-JevLite benchmark on the real novllm judge queues |
+| `verify_coreml.py` / `benchmark_coreml.py` | parity + latency harnesses |
 | `legacy/` | the earlier fixed-head version, kept for comparison |
 
 ---
@@ -221,6 +294,7 @@ Every script takes `--limit N` for a fast dry run, and `--config <workflow>` to 
 - **TypeSafe AI** for [Jev](https://www.mindstudio.ai/blog/jev-system-one-model-launch), the design this reproduces. Not affiliated with, endorsed by, or derived from their model.
 - [`LocalLLaMA/typed-decisions`](https://huggingface.co/datasets/LocalLLaMA/typed-decisions) — the public benchmark.
 - [`answerdotai/ModernBERT-base`](https://huggingface.co/answerdotai/ModernBERT-base) — the encoder.
+- [`j-llm/jevlite`](https://huggingface.co/j-llm/jevlite) — trained weights and Core ML packages from this repo ([collection](https://huggingface.co/collections/j-llm/open-jev-jevlite-6ad0a5a45d551b01114c3454)).
 - Prior open reproductions: [Verdict / OpenJev](https://github.com/Heman10x-NGU/Verdict-open-jev) (ModernBERT-151M + WebGPU playground) and [open-jev-deberta-v3-large](https://huggingface.co/com-kotobalabs/open-jev-deberta-v3-large).
 - Independent evaluations this repo's claims lean on: [baselines eval](https://github.com/ickma2311/jev-baselines-eval) (Banking77 / CLINC150), [phishing bench](https://github.com/anisselbd/jev-phishing-bench) (vs Claude Haiku 4.5), [OOD calibration](https://github.com/scienthoon/jev-ood-calibration) (per-type ECE).
 

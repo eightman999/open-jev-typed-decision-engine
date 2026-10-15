@@ -12,6 +12,7 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 from td_data import load_split, TypedDecisions, collate, val_split, pad_cat
+from device import pick_device
 from model import JevLite, grouped_softmax, argmax_per_question, require_ckpt
 from typed_schema import TYPES
 from metrics import ece, ece_confidence, brier, nll
@@ -135,13 +136,14 @@ if __name__ == "__main__":
     a = p.parse_args()
 
     ck = require_ckpt(a.ckpt)
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = pick_device()
     model = JevLite(ck["encoder"])
     model.load_state_dict(ck["state_dict"])
     model.to(dev).eval()
 
     _, va = val_split(load_split("train", a.config, limit=a.limit))
-    ds = TypedDecisions(va, model.tok, ck["max_len"], model.qid, model.lid)
+    ds = TypedDecisions(va, model.tok, ck["max_len"], model.qid, model.lid,
+                        slots=ck.get("slots", "lead"))
     dl = DataLoader(ds, batch_size=a.bs,
                     collate_fn=lambda b: collate(b, model.tok.pad_token_id))
     cached = collect(model, dl, dev)

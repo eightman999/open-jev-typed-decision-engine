@@ -10,6 +10,7 @@ import time
 import torch
 from torch.utils.data import DataLoader
 from td_data import load_split, TypedDecisions, collate, pad_cat
+from device import pick_device
 from model import JevLite, argmax_per_question, require_ckpt
 from typed_schema import TYPES
 from metrics import (ece, ece_confidence, brier, nll, tvd, risk_coverage,
@@ -89,13 +90,14 @@ if __name__ == "__main__":
     a = p.parse_args()
 
     ck = require_ckpt(a.ckpt)
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = pick_device()
     model = JevLite(ck["encoder"])
     model.load_state_dict(ck["state_dict"])
     model.to(dev).eval()
 
     test = load_split("test", a.config, limit=a.limit)
-    ds = TypedDecisions(test, model.tok, ck["max_len"], model.qid, model.lid)
+    ds = TypedDecisions(test, model.tok, ck["max_len"], model.qid, model.lid,
+                        slots=ck.get("slots", "lead"))
     dl = DataLoader(ds, batch_size=a.bs,
                     collate_fn=lambda b: collate(b, model.tok.pad_token_id))
 

@@ -58,6 +58,18 @@ class JevLite(nn.Module):
         picked = h.gather(1, label_pos.unsqueeze(-1).expand(-1, -1, d))
         return self.score(self.drop(picked)).squeeze(-1)          # [B, M]
 
+    def token_logits(self, input_ids, attention_mask):
+        """Score head applied at every position. -> [B, L]
+
+        Linear(d, 1) is per-token, so scoring first and gathering label
+        positions afterwards is the same math as logits() - and it is what
+        lets the whole encoder + head live in one Core ML program while the
+        dynamic label gather stays on CPU.
+        """
+        h = self.encoder(input_ids=input_ids,
+                         attention_mask=attention_mask).last_hidden_state
+        return self.score(self.drop(h)).squeeze(-1)               # [B, L]
+
     def forward(self, batch, apply_temperature=False):
         lg = self.logits(batch["input_ids"], batch["attention_mask"], batch["label_pos"])
         if apply_temperature:
@@ -120,7 +132,8 @@ def require_ckpt(path):
 
 
 @torch.no_grad()
-def predict_distributions(model, rows, max_len, device, batch_size=8):
+def predict_distributions(model, rows, max_len, device, batch_size=8,
+                          slots="lead"):
     """Per-question probability distributions with label names attached.
 
     -> [{qname: {"labels": [...], "probs": [...]}}] in the same order as `rows`.
@@ -132,7 +145,8 @@ def predict_distributions(model, rows, max_len, device, batch_size=8):
     from td_data import TypedDecisions, collate
     from torch.utils.data import DataLoader
 
-    ds = TypedDecisions(rows, model.tok, max_len, model.qid, model.lid)
+    ds = TypedDecisions(rows, model.tok, max_len, model.qid, model.lid,
+                        slots=slots)
     dl = DataLoader(ds, batch_size=batch_size,
                     collate_fn=lambda b: collate(b, model.tok.pad_token_id))
     model.eval()

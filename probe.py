@@ -20,7 +20,8 @@ def embed_states(rows, encoder, max_len=512, batch_size=16, device=None):
     import torch
     from transformers import AutoModel, AutoTokenizer
 
-    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    from device import pick_device
+    dev = device or pick_device()
     tok = AutoTokenizer.from_pretrained(encoder)
     enc = AutoModel.from_pretrained(encoder).to(dev).eval()
     out = []

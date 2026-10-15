@@ -4,6 +4,11 @@
 *.onnx.data
 *.int8.onnx
 
+# Core ML artifacts - regenerate with export_coreml.py
+*.mlpackage
+*.mlmodelc
+*.mlmodel
+
 # run outputs - regenerate by rerunning the pipeline
 baselines.json
 history.json
@@ -24,6 +29,32 @@ venv/
 
 # generated for a live Colab session; regenerate with make_patch_cell.py
 patch_cell.txt
+
+# Jev competition benchmark - per-item rows and review samples can be large;
+# the small report JSONs stay committed
+artifacts/jev_items_*.jsonl
+artifacts/jev_disagreements*.jsonl
+artifacts/jev_human_review.jsonl
+artifacts/jev_competition_smoke.json
+
+# LLM silver-judge raw transcripts embed full prompts/responses (large);
+# silver labels, review queue and summary JSONs stay committed
+artifacts/jev_llm_judge_raw*.jsonl
+
+# JudgeBench: dataset copy, per-call raw rows and disagreement rows embed
+# full case text (large); summary/failures JSONs stay committed
+artifacts/judgebench_620.jsonl
+artifacts/judgebench_raw.jsonl
+artifacts/judgebench_raw_sym.jsonl
+artifacts/judgebench_raw_diag*.jsonl
+artifacts/judgebench_disagreements.jsonl
+artifacts/judgebench_disagreements_diag*.jsonl
+artifacts/judgebench_failures_diag*.jsonl
+
+# posprior probe: synthetic rows are regenerable via --make-data (fixed seed);
+# the small metrics JSON stays committed
+artifacts/posprior_train.jsonl
+artifacts/posprior_eval.jsonl
 
 # run artifacts are gitignored, but the committed copies under docs/ are not
 !docs/charts/*.png
