@@ -10,6 +10,8 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-2a78d6?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Colab](https://img.shields.io/badge/train%20on-free%20T4-eb6834?style=for-the-badge&logo=googlecolab&logoColor=white)](jevlite_colab.ipynb)
 [![Benchmark](https://img.shields.io/badge/benchmark-typed--decisions-1baf7a?style=for-the-badge)](https://huggingface.co/datasets/LocalLLaMA/typed-decisions)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20weights-j--llm%2Fjevlite-ffcc4d?style=for-the-badge)](https://huggingface.co/j-llm/jevlite)
+[![Core ML](https://img.shields.io/badge/Core%20ML-Apple%20Neural%20Engine-000000?style=for-the-badge&logo=apple&logoColor=white)](https://huggingface.co/j-llm/jevlite)
 
 [Results](#results) · [How it works](#how-it-works) · [Quick start](#quick-start) · [What we learned](#what-the-runs-actually-proved) · [Limitations](#limitations)
 
@@ -165,6 +167,17 @@ The encoder + score head run on the Neural Engine as a fixed-shape Core ML
 program; the dynamic-schema bookkeeping (label-position gather, per-question
 softmax, temperature) stays on CPU, so adding questions still costs nothing.
 
+**Pre-built packages:** [`j-llm/jevlite`](https://huggingface.co/j-llm/jevlite) on
+Hugging Face has the fp16 (Neural Engine) and fp32 `.mlpackage` buckets plus the
+trained weights (`jevlite.pt`, `model.safetensors`), so you can skip training and export:
+
+```bash
+hf download j-llm/jevlite --local-dir hf-jevlite
+python decide.py --backend coreml --pkg-dir hf-jevlite/coreml --ckpt hf-jevlite/jevlite.pt
+```
+
+To build them yourself instead:
+
 ```bash
 # one-time: export fp16 ML Programs for the sequence buckets
 python export_coreml.py --ckpt jevlite.pt --seq-lens 256 512 1024 \
@@ -281,6 +294,7 @@ system, not ground truth.
 - **TypeSafe AI** for [Jev](https://www.mindstudio.ai/blog/jev-system-one-model-launch), the design this reproduces. Not affiliated with, endorsed by, or derived from their model.
 - [`LocalLLaMA/typed-decisions`](https://huggingface.co/datasets/LocalLLaMA/typed-decisions) — the public benchmark.
 - [`answerdotai/ModernBERT-base`](https://huggingface.co/answerdotai/ModernBERT-base) — the encoder.
+- [`j-llm/jevlite`](https://huggingface.co/j-llm/jevlite) — trained weights and Core ML packages from this repo ([collection](https://huggingface.co/collections/j-llm/open-jev-jevlite-6ad0a5a45d551b01114c3454)).
 - Prior open reproductions: [Verdict / OpenJev](https://github.com/Heman10x-NGU/Verdict-open-jev) (ModernBERT-151M + WebGPU playground) and [open-jev-deberta-v3-large](https://huggingface.co/com-kotobalabs/open-jev-deberta-v3-large).
 - Independent evaluations this repo's claims lean on: [baselines eval](https://github.com/ickma2311/jev-baselines-eval) (Banking77 / CLINC150), [phishing bench](https://github.com/anisselbd/jev-phishing-bench) (vs Claude Haiku 4.5), [OOD calibration](https://github.com/scienthoon/jev-ood-calibration) (per-type ECE).
 
